@@ -1,0 +1,45 @@
+cmake_minimum_required(VERSION 3.13...3.18)
+
+project(enoki-thread
+  DESCRIPTION
+    "Enoki thread library"
+  LANGUAGES
+    CXX C
+)
+
+option(ENOKI_THREAD_ENABLE_TESTS "Build test suite?" OFF)
+
+include(cmake/EnokiDefaults.cmake)
+
+add_library(
+  enoki-thread SHARED
+  include/enoki-thread/thread.h
+  src/queue.cpp src/queue.h
+  src/thread.cpp
+)
+
+target_compile_features(enoki-thread PRIVATE cxx_std_11)
+target_include_directories(enoki-thread PRIVATE include)
+
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # GCC requires libatomic for 16 byte CSA
+  target_link_libraries(enoki-thread PRIVATE atomic)
+endif()
+
+target_include_directories(enoki-thread
+  PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+if (NOT MSVC)
+  target_compile_options(enoki-thread PRIVATE -Wall -Wextra)
+  if (U_CMAKE_BUILD_TYPE MATCHES RELEASE OR U_CMAKE_BUILD_TYPE MATCHES MINSIZEREL)
+    target_compile_options(enoki-thread PRIVATE -fvisibility=hidden)
+  endif()
+endif()
+
+target_compile_definitions(enoki-thread PRIVATE -DENOKI_THREAD_BUILD=1)
+
+if (ENOKI_THREAD_ENABLE_TESTS)
+   add_subdirectory(tests)
+endif()
