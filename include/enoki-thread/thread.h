@@ -95,28 +95,30 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  * This function submits a new task consisting of \c size work units to the
  * thread pool \c pool.
  *
- * The \c parent and \c parent_count parameters can be used to specify parent
- * tasks that must be completed before execution of this task can commence. If
- * the task does not depend on any other tasks (e.g. <tt>parent_count == 0</tt>
- * and <tt>parent == nullptr</tt>), or when all of those other tasks have already
- * finished executing, then it will be immediately appended to the end of the
- * task queue. Otherwise, the task will be appended once all parent tasks
- * have finished executing.
+ * <b>Callback</b>: The task callback \c func will be invoked \c size times by
+ * the various thread pool workers. Its first argument will range from
+ * <tt>0</tt> to \c <tt>size - 1</tt>, and the second argument refers to a
+ * payload memory region specified via the \c payload parameter.
  *
- * The task callback \c func will be invoked \c size times by the various
- * thread pool workers. Its first argument will range from 0 to \c size - 1,
- * and the second argument refers to a payload memory region specified via the
- * \c payload parameter.
+ * <b>Parents</bb>: The \c parent and \c parent_count parameters can be used to
+ * specify parent tasks that must be completed before execution of this task
+ * can commence. If the task does not depend on any other tasks (e.g.
+ * <tt>parent_count == 0</tt> and <tt>parent == nullptr</tt>), or when all of
+ * those other tasks have already finished executing, then it will be
+ * immediately appended to the end of the task queue. Otherwise, the task will
+ * be scheduled once all parent tasks have finished executing.
  *
- * This payload is handled using one of two possible modes:
+ * <b>Payload storage</b>: The callback payload is handled using one of two
+ * possible modes:
  *
  * <ol>
  *    <li>When <tt>size == 0</tt> or <tt>payload_deleter != nullptr</tt>, the
- *    value of \c payload is simply forwarded to \c func. In the latter case,
- *    <tt>payload_deleter(payload)</tt> is invoked following completion of the
- *    task, which can carry out additional cleanup operations if needed. In
- *    both cases, the memory region targeted by \c payload may be accessed
- *    asynchronously and must remain valid until the task is done.</li>
+ *    value of the \c payload parameter is simply forwarded to the callback \c
+ *    func. In the latter case, <tt>payload_deleter(payload)</tt> is invoked
+ *    following completion of the task, which can carry out additional cleanup
+ *    operations if needed. In both cases, the memory region targeted by \c
+ *    payload may be accessed asynchronously and must remain valid until the
+ *    task is done.</li>
  *
  *    <li>Otherwise, the function will internally create a copy of the payload
  *    and free it following completion of the task. In this case, it is fine to
@@ -126,18 +128,22 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  *
  * The function returns a task handle that can be used to schedule other
  * dependent tasks, and to wait for task completion if desired. This handle
- * must eventually be released using \ref task_release(). A failure to do
- * so will result in memory leaks.
+ * must eventually be released using \ref task_release() or \ref
+ * task_release_and_wait(). A failure to do so will result in memory leaks.
  *
- * When the submitted task is "small" (\c size == 1), and when it does not have
- * parents, it will be executed right away without involving the thread pool,
- * in which case the function returns \c nullptr. A task of size zero si
- * handled equivalently  to unit-sized task, except that it enforces an
- * asynchronous execution.
+ * <b>Small task optimization</b>: If desired, small tasks can be executed
+ * right away without using the thread pool. This happens under the following
+ * conditions:
+ *
+ * <ol>
+ *   <li>The task is "small" (\c size == 1).</li>
+ *   <li>The task does not depend on any parent tasks.</li>
+ *   <li>The \c always_async parameter is set to 0</li>
+ * </ol>
  *
  * \remark
  *     Barriers and similar dependency relations can be encoded by via
- *     artificial tasks using <tt>size == 1</tt> and <tt>func == nullptr<tt>
+ *     artificial tasks using <tt>size == 0</tt> and <tt>func == nullptr<tt>
  *     along with a set of parent tasks.
  *
  * \param pool
@@ -153,9 +159,7 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  *
  * \param size
  *     Total number of work units; the callback \c func will be called this
- *     many times if provided. Tasks of size 1 are considered tiny and will be
- *     executed on the current thread, in which case the function returns \c
- *     nullptr.
+ *     many times if provided.
  *
  * \param func
  *     Callback function that will be invoked to perform the actual computation.
@@ -173,8 +177,18 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  * \param payload_deleter
  *     Optional callback that will be invoked to free the payload
  *
+ * \param always_async
+ *     If set to a nonzero value, execution will always happen asynchronously,
+ *     even in cases where the task being scheduled has no parents, and
+ *     when only encodes a small amount of work (\c size == 1). Otherwise
+ *     it will be executed synchronously, and the function will return \c nullptr.
+ *
  * \return
  *     A task handle that must eventually be released via \ref task_release()
+ *     or \ref task_wait_and_release(). The function returns \c nullptr when
+ *     no task was generated (e.g. when there are no parent tasks, and either
+ *     <tt>size==0</tt>, or when <tt>size==1</tt> and the task was executed
+ *     synchronously.)
  */
 extern ENOKI_THREAD_EXPORT
 Task *task_submit_dep(Pool *pool,
@@ -184,7 +198,8 @@ Task *task_submit_dep(Pool *pool,
                       void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
                       void *payload ENOKI_THREAD_DEF(0),
                       uint32_t payload_size ENOKI_THREAD_DEF(0),
-                      void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0));
+                      void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0),
+                      int always_async ENOKI_THREAD_DEF(0));
 
 /*
  * \brief Release a task handle so that it can eventually be reused
@@ -246,10 +261,11 @@ Task *task_submit(Pool *pool,
                   void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
                   void *payload ENOKI_THREAD_DEF(0),
                   uint32_t payload_size ENOKI_THREAD_DEF(0),
-                  void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0)) {
+                  void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0),
+                  int always_async ENOKI_THREAD_DEF(0)) {
 
     return task_submit_dep(pool, 0, 0, size, func, payload, payload_size,
-                           payload_deleter);
+                           payload_deleter, always_async);
 }
 
 /// Convenience wrapper around task_submit(), but fully synchronous
@@ -259,7 +275,7 @@ void task_submit_and_wait(Pool *pool,
                           void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
                           void *payload ENOKI_THREAD_DEF(0)) {
 
-    Task *task = task_submit(pool, size, func, payload, 0, 0);
+    Task *task = task_submit(pool, size, func, payload, 0, 0, 0);
     task_wait_and_release(task);
 }
 
@@ -355,7 +371,7 @@ namespace enoki {
 
             return task_submit_dep(pool, parents.begin(),
                                    (uint32_t) parents.size(), range.blocks(),
-                                   callback, &payload, sizeof(Payload));
+                                   callback, &payload, sizeof(Payload), nullptr, 1);
         } else {
             Payload *payload = new Payload{ std::forward<Func>(func), range.begin(),
                                             range.end(), range.block_size() };
@@ -366,14 +382,13 @@ namespace enoki {
 
             return task_submit_dep(pool, parents.begin(),
                                    (uint32_t) parents.size(), range.blocks(),
-                                   callback, payload, 0, deleter);
+                                   callback, payload, 0, deleter, 1);
         }
     }
 
     template <typename Func>
-    Task *parallel_do_async(Func &&func,
-                            std::initializer_list<Task *> parents = { },
-                            Pool *pool = nullptr) {
+    Task *do_async(Func &&func, std::initializer_list<Task *> parents = {},
+                   Pool *pool = nullptr) {
 
         struct Payload { Func f; };
 
@@ -386,16 +401,16 @@ namespace enoki {
             Payload payload{ std::forward<Func>(func) };
 
             return task_submit_dep(pool, parents.begin(),
-                                   (uint32_t) parents.size(), 0, callback,
-                                   &payload, sizeof(Payload));
+                                   (uint32_t) parents.size(), 1, callback,
+                                   &payload, sizeof(Payload), nullptr, 1);
         } else {
             Payload *payload = new Payload{ std::forward<Func>(func) };
 
             auto deleter = [](void *payload) { delete (Payload *) payload; };
 
             return task_submit_dep(pool, parents.begin(),
-                                   (uint32_t) parents.size(), 0, callback,
-                                   payload, 0, deleter);
+                                   (uint32_t) parents.size(), 1, callback,
+                                   payload, 0, deleter, 1);
         }
     }
 }

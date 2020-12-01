@@ -121,13 +121,24 @@ void pool_set_size(Pool *pool, uint32_t size) {
 Task *task_submit_dep(Pool *pool, const Task *const *parent,
                       uint32_t parent_count, uint32_t size,
                       void (*func)(uint32_t, void *), void *payload,
-                      uint32_t payload_size, void (*payload_deleter)(void *)) {
+                      uint32_t payload_size, void (*payload_deleter)(void *),
+                      int async) {
+
+    if (size == 0) {
+        // There is no work, so the payload is irrelevant
+        func = nullptr;
+
+        // The queue requires task size >= 1
+        size = 1;
+    }
+
+    // Does the task have parent tasks
     bool has_parent = false;
     for (uint32_t i = 0; i < parent_count; ++i)
         has_parent |= parent[i] != nullptr;
 
     // If this is a small work unit, execute it right away
-    if (size == 1 && !has_parent) {
+    if (size == 1 && !has_parent && async == 0) {
         EKT_TRACE("task_submit_dep(): task is small, executing right away.");
 
         if (func)

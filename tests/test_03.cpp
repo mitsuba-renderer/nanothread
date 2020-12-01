@@ -16,7 +16,7 @@ Task *tetranacci(Pool *pool, uint32_t i, uint32_t *out) {
         tetranacci(pool, i - 4, tmp + 3)
     };
 
-    Task *rv = enoki::parallel_do_async(
+    Task *rv = enoki::do_async(
         [tmp, out, i]() {
             *out = tmp[0] + tmp[1] + tmp[2] + tmp[3];
             delete[] tmp;
@@ -38,7 +38,7 @@ Task * tetranacci_2(Pool *pool, uint32_t i, uint32_t *out) {
         return nullptr;
     }
 
-    return enoki::parallel_do_async(
+    return enoki::do_async(
         [pool, i, out]() {
             uint32_t tmp[4];
             Task *task[4];
