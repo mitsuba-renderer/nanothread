@@ -1,6 +1,5 @@
 #include <enoki-thread/thread.h>
-#include <memory>
-#include <unistd.h>
+#include <stdlib.h>
 
 Task *tetranacci(Pool *pool, uint32_t i, uint32_t *out) {
     if (i < 4) {

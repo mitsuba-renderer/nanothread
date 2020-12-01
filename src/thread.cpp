@@ -252,7 +252,7 @@ void task_release(Task *task) {
         task->pool->queue.release(task, true);
 }
 
-void task_wait_and_release(Task *task) {
+void task_wait_and_release(Task *task) ENOKI_THREAD_THROW {
     try {
         task_wait(task);
     } catch (...) {

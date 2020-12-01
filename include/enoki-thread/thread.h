@@ -35,7 +35,10 @@ typedef struct Pool Pool;
 typedef struct Task Task;
 
 #if defined(__cplusplus)
+#define ENOKI_THREAD_THROW     noexcept(false)
 extern "C" {
+#else
+#define ENOKI_THREAD_THROW
 #endif
 
 /**
@@ -217,7 +220,7 @@ extern ENOKI_THREAD_EXPORT void task_release(Task *task);
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_wait(Task *task);
+extern ENOKI_THREAD_EXPORT void task_wait(Task *task) ENOKI_THREAD_THROW;
 
 /*
  * \brief Wait for the completion of the specified task and release its handle
@@ -234,7 +237,7 @@ extern ENOKI_THREAD_EXPORT void task_wait(Task *task);
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task);
+extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task) ENOKI_THREAD_THROW;
 
 /// Convenience wrapper around task_submit_dep(), but without dependencies
 static inline
