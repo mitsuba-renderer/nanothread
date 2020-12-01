@@ -122,20 +122,24 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
                       uint32_t parent_count, uint32_t size,
                       void (*func)(uint32_t, void *), void *payload,
                       uint32_t payload_size, void (*payload_deleter)(void *)) {
-    EKT_ASSERT(size > 0);
-
     bool has_parent = false;
     for (uint32_t i = 0; i < parent_count; ++i)
         has_parent |= parent[i] != nullptr;
 
     // If this is a small work unit, execute it right away
     if (size == 1 && !has_parent) {
+        EKT_TRACE("task_submit_dep(): task is small, executing right away.");
+
         if (func)
             func(0, payload);
         if (payload_deleter)
             payload_deleter(payload);
         return nullptr;
     }
+
+    // Size 0 is equivalent to size 1, but without the above optimization
+    if (size == 0)
+        size = 1;
 
     if (!pool)
         pool = pool_default();
@@ -144,9 +148,9 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
     if (has_parent) {
         // Prevent early job submission due to completion of parents
-        task->incomplete_parents = 1;
+        task->wait_parents.store(1, std::memory_order_release);
 
-        // Register dependencies in queue, will further increase child->incomplete_parents
+        // Register dependencies in queue, will further increase child->wait_parents
         for (uint32_t i = 0; i < parent_count; ++i)
             pool->queue.add_dependency((Task *) parent[i], task);
     }
@@ -184,7 +188,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
         /* Undo the earlier 'wait' increment. If the value is now zero, all
            parent tasks have completed and the job can be pushed. Otherwise,
            it's somebody else's job to carry out this step. */
-        push = --task->incomplete_parents == 0;
+        push = task->wait_parents.fetch_sub(1) == 1;
     }
 
     if (push)
@@ -202,11 +206,16 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
     if (task) {
         if (task->func) {
             try {
+                EKT_TRACE("Running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
                 task->func(index, task->payload);
             } catch (...) {
                 bool value = false;
-                if (task->exception_used.compare_exchange_strong(value, true))
+                if (task->exception_used.compare_exchange_strong(value, true)) {
+                    EKT_TRACE("Exception caught, storing..");
                     task->exception = std::current_exception();
+                } else {
+                    EKT_TRACE("Exception caught, ignoring (an exception was already stored).");
+                }
             }
         }
 
@@ -226,6 +235,7 @@ void task_wait(Task *task) {
         };
 
         EKT_TRACE("task_wait(%p)", task);
+
         // Help executing work units in the meantime
         while (!stopping_criterion(task))
             pool_execute_task(pool, stopping_criterion, task);
@@ -238,10 +248,18 @@ void task_wait(Task *task) {
 }
 
 void task_release(Task *task) {
-    if (task) {
-        EKT_TRACE("task_release(%p)", task);
+    if (task)
         task->pool->queue.release(task, true);
+}
+
+void task_wait_and_release(Task *task) {
+    try {
+        task_wait(task);
+    } catch (...) {
+        task_release(task);
+        throw;
     }
+    task_release(task);
 }
 
 Worker::Worker(Pool *pool, uint32_t id)

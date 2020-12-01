@@ -127,8 +127,10 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  * so will result in memory leaks.
  *
  * When the submitted task is "small" (\c size == 1), and when it does not have
- * parents, it will be executed right away without involving the thread
- * pool, in which case the function returns \c nullptr.
+ * parents, it will be executed right away without involving the thread pool,
+ * in which case the function returns \c nullptr. A task of size zero si
+ * handled equivalently  to unit-sized task, except that it enforces an
+ * asynchronous execution.
  *
  * \remark
  *     Barriers and similar dependency relations can be encoded by via
@@ -147,8 +149,10 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  *     Number of parent tasks
  *
  * \param size
- *     Total number of work units, the callback \c func will be called this
- *     many times if provided. Must be greater than zero.
+ *     Total number of work units; the callback \c func will be called this
+ *     many times if provided. Tasks of size 1 are considered tiny and will be
+ *     executed on the current thread, in which case the function returns \c
+ *     nullptr.
  *
  * \param func
  *     Callback function that will be invoked to perform the actual computation.
@@ -165,6 +169,9 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  *
  * \param payload_deleter
  *     Optional callback that will be invoked to free the payload
+ *
+ * \return
+ *     A task handle that must eventually be released via \ref task_release()
  */
 extern ENOKI_THREAD_EXPORT
 Task *task_submit_dep(Pool *pool,
@@ -202,10 +209,32 @@ extern ENOKI_THREAD_EXPORT void task_release(Task *task);
  * This function causes the calling thread to sleep until all work units of
  * 'task' have been completed.
  *
+ * If an exception was caught during parallel excecution of 'task', the
+ * function \ref task_wait() will re-raise this exception in the context of the
+ * caller. Note that if a parallel task raises many exceptions, only a single
+ * one of them will be be captured in this way.
+ *
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
 extern ENOKI_THREAD_EXPORT void task_wait(Task *task);
+
+/*
+ * \brief Wait for the completion of the specified task and release its handle
+ *
+ * This function is equivalent to calling \ref task_wait() followed by \ref
+ * task_release().
+ *
+ * If an exception was caught during parallel excecution of 'task', the
+ * function \ref task_wait_and_release() will perform the release step and then
+ * re-raise this exception in the context of the caller. Note that if a
+ * parallel task raises many exceptions, only a single one of them will be be
+ * captured in this way.
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the operation is a no-op.
+ */
+extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task);
 
 /// Convenience wrapper around task_submit_dep(), but without dependencies
 static inline
@@ -228,8 +257,7 @@ void task_submit_and_wait(Pool *pool,
                           void *payload ENOKI_THREAD_DEF(0)) {
 
     Task *task = task_submit(pool, size, func, payload, 0, 0);
-    task_wait(task);
-    task_release(task);
+    task_wait_and_release(task);
 }
 
 #if defined(__cplusplus)
@@ -243,12 +271,25 @@ namespace enoki {
         blocked_range(Int begin, Int end, Int block_size = 1)
             : m_begin(begin), m_end(end), m_block_size(block_size) { }
 
+        struct iterator {
+            Int value;
+
+            iterator(Int value) : value(value) { }
+
+            Int operator*() const { return value; }
+            operator Int() const { return value;}
+
+            void operator++() { value++; }
+            bool operator==(const iterator &it) { return value == it.value; }
+            bool operator!=(const iterator &it) { return value != it.value; }
+        };
+
         uint32_t blocks() const {
             return (uint32_t) ((m_end - m_begin + m_block_size - 1) / m_block_size);
         }
 
-        Int begin() const { return m_begin; }
-        Int end() const { return m_end; }
+        iterator begin() const { return iterator(m_begin); }
+        iterator end() const { return iterator(m_end); }
         Int block_size() const { return m_block_size; }
 
     private:
@@ -270,7 +311,7 @@ namespace enoki {
                          range.block_size() };
 
         auto callback = [](uint32_t index, void *payload) {
-            Payload *p = *(Payload *) payload;
+            Payload *p = (Payload *) payload;
             Int begin = p->begin + p->block_size * (Int) index,
                 end = begin + p->block_size;
 
@@ -280,8 +321,7 @@ namespace enoki {
             (*p->f)(blocked_range<Int>(begin, end));
         };
 
-        task_submit_and_wait(pool, nullptr, 0, range.blocks(),
-                             callback, &payload);
+        task_submit_and_wait(pool, range.blocks(), callback, &payload);
     }
 
     template <typename Int, typename Func>
@@ -302,16 +342,17 @@ namespace enoki {
             if (end > p->end)
                 end = p->end;
 
-            (p->f)(blocked_range<Int>(begin, end));
+            p->f(blocked_range<Int>(begin, end));
         };
 
-        if (std::is_trivially_copyable<Func>::value) {
+        if (std::is_trivially_copyable<Func>::value &&
+            std::is_trivially_destructible<Func>::value) {
             Payload payload{ std::forward<Func>(func), range.begin(),
                              range.end(), range.block_size() };
 
-            return task_submit_dep(pool, parents.begin(), (uint32_t) parents.size(),
-                               range.blocks(), callback, &payload,
-                               sizeof(Payload));
+            return task_submit_dep(pool, parents.begin(),
+                                   (uint32_t) parents.size(), range.blocks(),
+                                   callback, &payload, sizeof(Payload));
         } else {
             Payload *payload = new Payload{ std::forward<Func>(func), range.begin(),
                                             range.end(), range.block_size() };
@@ -323,6 +364,35 @@ namespace enoki {
             return task_submit_dep(pool, parents.begin(),
                                    (uint32_t) parents.size(), range.blocks(),
                                    callback, payload, 0, deleter);
+        }
+    }
+
+    template <typename Func>
+    Task *parallel_do_async(Func &&func,
+                            std::initializer_list<Task *> parents = { },
+                            Pool *pool = nullptr) {
+
+        struct Payload { Func f; };
+
+        auto callback = [](uint32_t /* unused */, void *payload) {
+            ((Payload *) payload)->f();
+        };
+
+        if (std::is_trivially_copyable<Func>::value &&
+            std::is_trivially_destructible<Func>::value) {
+            Payload payload{ std::forward<Func>(func) };
+
+            return task_submit_dep(pool, parents.begin(),
+                                   (uint32_t) parents.size(), 0, callback,
+                                   &payload, sizeof(Payload));
+        } else {
+            Payload *payload = new Payload{ std::forward<Func>(func) };
+
+            auto deleter = [](void *payload) { delete (Payload *) payload; };
+
+            return task_submit_dep(pool, parents.begin(),
+                                   (uint32_t) parents.size(), 0, callback,
+                                   payload, 0, deleter);
         }
     }
 }

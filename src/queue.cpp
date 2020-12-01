@@ -89,7 +89,7 @@ TaskQueue::~TaskQueue() {
         }
 
         for (Task *child : task->children) {
-            uint32_t wait = child->incomplete_parents--;
+            uint32_t wait = child->wait_parents.fetch_sub(1);
             EKT_ASSERT(wait != 0);
             if (wait == 1)
                 push(child);
@@ -149,31 +149,47 @@ Task *TaskQueue::alloc(uint32_t size) {
     }
 
     task->next = Task::Ptr();
-    task->refcount.store(size + (size == 0 ? high_bit : (2 * high_bit)),
+    task->refcount.store(size + (size == 0 ? high_bit : (3 * high_bit)),
                          std::memory_order_relaxed);
-    task->incomplete_parents.store(0, std::memory_order_relaxed);
+    task->wait_parents.store(0, std::memory_order_relaxed);
     task->wait_count.store(0, std::memory_order_relaxed);
     task->size = size;
+
+    EKT_TRACE("Created new task %p with size=%u.", task, size);
 
     return task;
 }
 
 void TaskQueue::release(Task *task, bool high) {
-    uint64_t result = (task->refcount -= (high ? high_bit : 1));
+    uint64_t result = task->refcount.fetch_sub(high ? high_bit : 1);
     uint32_t ref_lo = (uint32_t) result,
-             ref_hi = (uint32_t) (result >> 32),
-             size = task->size;
+             ref_hi = (uint32_t) (result >> 32);
 
-    EKT_ASSERT(ref_lo <= size || (ref_lo == 0 && size == 0));
-    EKT_ASSERT(ref_hi <= 2);
+    EKT_ASSERT((!high || ref_hi > 0) && (high || ref_lo > 0));
+    ref_hi -= (uint32_t) high;
+    ref_lo -= (uint32_t) !high;
+
+    EKT_TRACE("dec_ref(%p, (%i, %i)) -> ref = (%u, %u)", task, (int) high,
+              (int) !high, ref_hi, ref_lo);
 
     // If all work has completed: schedule children and free payload
     if (!high && ref_lo == 0) {
+        EKT_ASSERT(task->payload != nullptr);
+        EKT_TRACE("All work associated with task %p has completed.", task);
+
         for (Task *child : task->children) {
-            uint32_t wait = child->incomplete_parents--;
-            EKT_ASSERT(wait != 0);
-            if (wait == 1)
+            uint32_t wait = child->wait_parents.fetch_sub(1);
+
+            EKT_TRACE("Notifying child %p of task %p: wait=%u", child, task,
+                      wait - 1);
+
+            EKT_ASSERT(wait > 0);
+
+            if (wait == 1) {
+                EKT_TRACE("Child %p of task %p is ready for execution.", child,
+                          task);
                 push(child);
+            }
         }
 
         task->clear();
@@ -181,10 +197,14 @@ void TaskQueue::release(Task *task, bool high) {
         // Possible that waiting threads were put to sleep
         if (task->wait_count.load() > 0)
             wakeup();
-    }
 
-    // Nobody holds any references at this point, recycle task
-    if (ref_lo == 0 && ref_hi == 0) {
+        release(task, true);
+    } else if (high && ref_hi == 0) {
+        // Nobody holds any references at this point, recycle task
+
+        EKT_ASSERT(ref_lo == 0);
+        EKT_TRACE("All usage of task %p is done, recycling.", task);
+
         Task::Ptr node = ldar(recycle);
         while (true) {
             task->next = node;
@@ -201,28 +221,35 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
     if (!parent)
         return;
 
+    uint64_t refcount =
+        parent->refcount.load(std::memory_order_relaxed);
+
     /* Increase the parent task's reference count to prevent the cleanup
        handler in release() from starting while the following executes. */
-    uint64_t before = parent->refcount++;
+    while (true) {
+        if ((uint32_t) refcount == 0)
+            return; // Parent task has already completed
 
-    // Parent is referenced. The high part of its refcount must be != 0
-    EKT_ASSERT((before >> 32) != 0);
+        if (parent->refcount.compare_exchange_weak(refcount, refcount + 1,
+                                                   std::memory_order_release,
+                                                   std::memory_order_relaxed))
+            break;
 
-    if ((uint32_t) before == 0) {
-        /* If the lower 32 bits of 'before' are zero, nothing needs to
-           be done as the parent task has already completed. */
-        parent->refcount--;
-        return;
-    } else {
-        // Otherwise, register the child task with the parent
-        parent->children.push_back(child);
-        child->incomplete_parents++;
-
-        /* Undo the parent->refcount change. If the task completed in the
-           meantime, child->incomplete_parents will also be decremented by
-           this call. */
-        release(parent);
+        pause();
     }
+
+    // Otherwise, register the child task with the parent
+    parent->children.push_back(child);
+    uint32_t wait = ++child->wait_parents;
+    (void) wait;
+
+    EKT_TRACE("Registering dependency: parent=%p, child=%p, child->wait=%u",
+              parent, child, wait);
+
+    /* Undo the parent->refcount change. If the task completed in the
+       meantime, child->wait_parents will also be decremented by
+       this call. */
+    release(parent);
 }
 
 void TaskQueue::push(Task *task) {
@@ -285,6 +312,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
                         break;
                     }
                 } else {
+                    EKT_ASSERT(remain == 1);
                     // Head node is removed from the queue, reduce refcount
                     if (cas(head, head_c, head_c.update_task(next_c.task))) {
                         task = next_c.task;
@@ -310,9 +338,8 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
         pause();
     }
 
-    if (task) {
+    if (task)
         EKT_TRACE("pop(task=%p, index=%u)", task, index);
-    }
 
     return { task, index };
 }

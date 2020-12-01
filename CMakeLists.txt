@@ -21,8 +21,14 @@ add_library(
 target_compile_features(enoki-thread PRIVATE cxx_std_11)
 target_include_directories(enoki-thread PRIVATE include)
 
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|x86_64.*|AMD64.*")
+  if (CMAKE_C_COMPILER_ID MATCHES "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
+    target_compile_options(enoki-thread PRIVATE -mcx16)
+  endif()
+endif()
+
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  # GCC requires libatomic for 16 byte CSA
+  # GCC may need libatomic for 16 byte CSA
   target_link_libraries(enoki-thread PRIVATE atomic)
 endif()
 

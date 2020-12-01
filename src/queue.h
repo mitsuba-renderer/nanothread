@@ -63,12 +63,16 @@ struct Task {
      * \brief Reference count of this instance
      *
      * The reference count is arranged as a 2-tuple of 32 bit counters. When
-     * submitting a work unit, its reference count is initially set to <tt>(2,
+     * submitting a work unit, its reference count is initially set to <tt>(3,
      * size)</tt>, where \c size is the number of associated work units. The
-     * number '2' indicates two special references by user code and by the
-     * queue itself, which don't correspond to outstanding work. The function
-     * <tt>TaskQueue::release(task, high=true/false)</tt> can be used to reduce
-     * the high and low parts separately.
+     * number '3' indicates three special references
+     *
+     *  - 1. A reference by the user code, which may e.g. wait for task completion
+     *  - 2. A reference as part of the queue data structure
+     *  - 3. A reference because the lower part is nonzero
+     *
+     * The function <tt>TaskQueue::release(task, high=true/false)</tt> can be
+     * used to reduce the high and low parts separately.
      *
      * When the low part reaches zero, it assumed that all associated work
      * units have been completed, at which point child tasks are scheduled
@@ -79,7 +83,7 @@ struct Task {
     std::atomic<uint64_t> refcount;
 
     /// Number of parent tasks that this task is waiting for
-    std::atomic<uint32_t> incomplete_parents;
+    std::atomic<uint32_t> wait_parents;
 
     /// Number of threads that are waiting for this task in task_wait()
     std::atomic<uint32_t> wait_count;
@@ -117,6 +121,9 @@ struct Task {
         payload_deleter = nullptr;
         payload = nullptr;
         children.clear();
+#if !defined(NDEBUG)
+        memset(payload_storage, 0xFF, sizeof(payload_storage));
+#endif
     }
 };
 
@@ -228,12 +235,12 @@ extern "C" uint32_t pool_thread_id();
 #define EKT_STR_2(x) #x
 #define EKT_STR(x)   EKT_STR_2(x)
 
-#define EKT_DEBUG
+// #define EKT_DEBUG
 #if defined(EKT_DEBUG)
 #  define EKT_TRACE(fmt, ...)                                                  \
       fprintf(stderr, "%03u: " fmt "\n", pool_thread_id(), ##__VA_ARGS__)
 #else
-#  define EKT_TRACE(fmt, ...)
+#  define EKT_TRACE(fmt, ...) do { } while (0)
 #endif
 
 #define EKT_ASSERT(x)                                                          \
@@ -242,3 +249,4 @@ extern "C" uint32_t pool_thread_id();
                         ":" EKT_STR(__LINE__) ": " #x "\n");                   \
         abort();                                                               \
     }
+
