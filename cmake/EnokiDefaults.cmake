@@ -1,3 +1,9 @@
+if (NOT ENOKI_CMAKE_DEFAULTS)
+  return()
+endif()
+
+set(ENOKI_CMAKE_DEFAULTS 1)
+
 # Set a default build configuration (Release)
 if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "Setting build type to 'Release' as none was specified.")
@@ -43,9 +49,6 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_FLAGS MATCHES "-stdl
     endif()
   endif()
 endif()
-
-get_directory_property(MYDEFS COMPILE_DEFINITIONS)
-MESSAGE( STATUS "Compile defs contain: " ${MYDEFS} ) 
 
 if (MSVC)
    add_definitions(-D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -DNOMINMAX)

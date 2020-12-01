@@ -108,11 +108,8 @@ Task *task_2 = task_submit_dep(
    the handle of task 1 can be released */
 task_release(task_1);
 
-// Wait for the completion of task 2
-task_wait(task_2);
-
-// .. and also release its handle
-task_release(task_2);
+// Wait for the completion of task 2 and also release its handle
+task_wait_and_release(task_2);
 ```
 
 ## Examples (C++11)
