@@ -1,4 +1,4 @@
-if (NOT ENOKI_CMAKE_DEFAULTS)
+if (DEFINED ENOKI_CMAKE_DEFAULTS)
   return()
 endif()
 

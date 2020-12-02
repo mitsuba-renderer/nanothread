@@ -174,7 +174,6 @@ void TaskQueue::release(Task *task, bool high) {
 
     // If all work has completed: schedule children and free payload
     if (!high && ref_lo == 0) {
-        EKT_ASSERT(task->payload != nullptr);
         EKT_TRACE("All work associated with task %p has completed.", task);
 
         for (Task *child : task->children) {
@@ -381,7 +380,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(v
 
         attempts++;
 
-        if (attempts == ENOKI_THREAD_MAX_ATTEMPTS) {
+        if (attempts >= ENOKI_THREAD_MAX_ATTEMPTS) {
             std::unique_lock<std::mutex> guard(sleep_mutex);
 
             uint64_t value = ++sleep_state, phase = value & high_mask;
