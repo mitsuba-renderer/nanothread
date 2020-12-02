@@ -21,7 +21,7 @@ wrapper. It has no dependencies other than CMake and a C++11-capable compiler.
 The entire project requires less than 800 lines of header and
 implementation code (according to [cloc](http://cloc.sourceforge.net/)).
 
-Enoki is used by [Enoki-JIT](https://github.com/mitsuba-renderer/enoki-jit),
+Enoki-Thread is used by [Enoki-JIT](https://github.com/mitsuba-renderer/enoki-jit),
 which is in turn part of the [Enoki](https://github.com/mitsuba-renderer/enoki)
 project, hence the name. However, this project has no dependencies on these
 parent projects and can be used in any other context.
