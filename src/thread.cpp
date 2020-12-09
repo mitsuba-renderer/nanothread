@@ -11,7 +11,6 @@
 #include "queue.h"
 #include <thread>
 #include <memory>
-#include <cstring>
 #include <type_traits>
 
 #if defined(_WIN32)

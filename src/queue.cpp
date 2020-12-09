@@ -8,8 +8,8 @@
 */
 
 #include "queue.h"
-#include <stdio.h>
-#include <time.h>
+#include <cstdio>
+#include <ctime>
 
 #if defined(_WIN32)
 #  include <windows.h>
