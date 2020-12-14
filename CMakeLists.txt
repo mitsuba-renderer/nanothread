@@ -34,6 +34,7 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     message(FATAL_ERROR "libatomic could not be found!")
   endif()
   target_link_libraries(enoki-thread PRIVATE ${LIBATOMIC})
+  mark_as_advanced(LIBATOMIC)
 endif()
 
 target_include_directories(enoki-thread
