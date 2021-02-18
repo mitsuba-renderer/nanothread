@@ -19,3 +19,4 @@ Debug
 libenoki-thread.so
 libenoki-thread.dylib
 enoki-thread.dll
+tests/test_0[1-4]
