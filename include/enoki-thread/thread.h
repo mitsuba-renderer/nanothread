@@ -348,9 +348,10 @@ namespace enoki {
                              const Task * const *parents,
                              size_t parent_count,
                              Pool *pool = nullptr) {
+        using BaseFunc = std::decay_t<Func>;
 
         struct Payload {
-            Func f;
+            BaseFunc f;
             Int begin, end, block_size;
         };
 
@@ -398,8 +399,11 @@ namespace enoki {
     template <typename Func>
     Task *do_async(Func &&func, const Task * const *parents, size_t parent_count,
                    Pool *pool = nullptr) {
+        using BaseFunc = std::decay_t<Func>;
 
-        struct Payload { Func f; };
+        struct Payload {
+            BaseFunc f;
+        };
 
         auto callback = [](uint32_t /* unused */, void *payload) {
             ((Payload *) payload)->f();
@@ -407,13 +411,13 @@ namespace enoki {
 
         if (std::is_trivially_copyable<Func>::value &&
             std::is_trivially_destructible<Func>::value) {
-            Payload payload{ std::forward<Func>(func) };
+            Payload payload {std::forward<Func>(func) };
 
             return task_submit_dep(pool, parents,
                                    (uint32_t) parent_count, 1, callback,
                                    &payload, sizeof(Payload), nullptr, 1);
         } else {
-            Payload *payload = new Payload{ std::forward<Func>(func) };
+            Payload *payload= new Payload{ std::forward<Func>(func) };
 
             auto deleter = [](void *payload) { delete (Payload *) payload; };
 
