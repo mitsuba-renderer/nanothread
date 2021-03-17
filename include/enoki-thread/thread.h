@@ -366,8 +366,8 @@ namespace enoki {
             p->f(blocked_range<Int>(begin, end));
         };
 
-        if (std::is_trivially_copyable<Func>::value &&
-            std::is_trivially_destructible<Func>::value) {
+        if (std::is_trivially_copyable<BaseFunc>::value &&
+            std::is_trivially_destructible<BaseFunc>::value) {
             Payload payload{ std::forward<Func>(func), range.begin(),
                              range.end(), range.block_size() };
 
@@ -409,15 +409,15 @@ namespace enoki {
             ((Payload *) payload)->f();
         };
 
-        if (std::is_trivially_copyable<Func>::value &&
-            std::is_trivially_destructible<Func>::value) {
+        if (std::is_trivially_copyable<BaseFunc>::value &&
+            std::is_trivially_destructible<BaseFunc>::value) {
             Payload payload {std::forward<Func>(func) };
 
             return task_submit_dep(pool, parents,
                                    (uint32_t) parent_count, 1, callback,
                                    &payload, sizeof(Payload), nullptr, 1);
         } else {
-            Payload *payload= new Payload{ std::forward<Func>(func) };
+            Payload *payload = new Payload{ std::forward<Func>(func) };
 
             auto deleter = [](void *payload) { delete (Payload *) payload; };
 
