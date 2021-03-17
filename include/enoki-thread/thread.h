@@ -348,7 +348,7 @@ namespace enoki {
                              const Task * const *parents,
                              size_t parent_count,
                              Pool *pool = nullptr) {
-        using BaseFunc = std::decay_t<Func>;
+        using BaseFunc = typename std::decay<Func>::type;
 
         struct Payload {
             BaseFunc f;
@@ -399,7 +399,7 @@ namespace enoki {
     template <typename Func>
     Task *do_async(Func &&func, const Task * const *parents, size_t parent_count,
                    Pool *pool = nullptr) {
-        using BaseFunc = std::decay_t<Func>;
+        using BaseFunc = typename std::decay<Func>::type;
 
         struct Payload {
             BaseFunc f;
