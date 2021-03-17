@@ -345,7 +345,8 @@ namespace enoki {
 
     template <typename Int, typename Func>
     Task *parallel_for_async(const blocked_range<Int> &range, Func &&func,
-                             std::initializer_list<Task *> parents = { },
+                             const Task * const *parents,
+                             size_t parent_count,
                              Pool *pool = nullptr) {
 
         struct Payload {
@@ -369,8 +370,8 @@ namespace enoki {
             Payload payload{ std::forward<Func>(func), range.begin(),
                              range.end(), range.block_size() };
 
-            return task_submit_dep(pool, parents.begin(),
-                                   (uint32_t) parents.size(), range.blocks(),
+            return task_submit_dep(pool, parents,
+                                   (uint32_t) parent_count, range.blocks(),
                                    callback, &payload, sizeof(Payload), nullptr, 1);
         } else {
             Payload *payload = new Payload{ std::forward<Func>(func), range.begin(),
@@ -380,14 +381,22 @@ namespace enoki {
                 delete (Payload *) payload;
             };
 
-            return task_submit_dep(pool, parents.begin(),
-                                   (uint32_t) parents.size(), range.blocks(),
+            return task_submit_dep(pool, parents,
+                                   (uint32_t) parent_count, range.blocks(),
                                    callback, payload, 0, deleter, 1);
         }
     }
 
+    template <typename Int, typename Func>
+    Task *parallel_for_async(const blocked_range<Int> &range, Func &&func,
+                             std::initializer_list<const Task *> parents = { },
+                             Pool *pool = nullptr) {
+        return parallel_for_async(range, func, parents.begin(), parents.size(),
+                                  pool);
+    }
+
     template <typename Func>
-    Task *do_async(Func &&func, std::initializer_list<Task *> parents = {},
+    Task *do_async(Func &&func, const Task * const *parents, size_t parent_count,
                    Pool *pool = nullptr) {
 
         struct Payload { Func f; };
@@ -400,18 +409,24 @@ namespace enoki {
             std::is_trivially_destructible<Func>::value) {
             Payload payload{ std::forward<Func>(func) };
 
-            return task_submit_dep(pool, parents.begin(),
-                                   (uint32_t) parents.size(), 1, callback,
+            return task_submit_dep(pool, parents,
+                                   (uint32_t) parent_count, 1, callback,
                                    &payload, sizeof(Payload), nullptr, 1);
         } else {
             Payload *payload = new Payload{ std::forward<Func>(func) };
 
             auto deleter = [](void *payload) { delete (Payload *) payload; };
 
-            return task_submit_dep(pool, parents.begin(),
-                                   (uint32_t) parents.size(), 1, callback,
+            return task_submit_dep(pool, parents,
+                                   (uint32_t) parent_count, 1, callback,
                                    payload, 0, deleter, 1);
         }
+    }
+
+    template <typename Func>
+    Task *do_async(Func &&func, std::initializer_list<const Task *> parents = {},
+                   Pool *pool = nullptr) {
+        return do_async(func, parents.begin(), parents.size(), pool);
     }
 }
 #endif
