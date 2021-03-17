@@ -187,6 +187,12 @@ void TaskQueue::release(Task *task, bool high) {
             if (wait == 1) {
                 EKT_TRACE("Child %p of task %p is ready for execution.", child,
                           task);
+                if (task->exception_used.load()) {
+                    EKT_TRACE("Propagating exception to child %p of task %p.",
+                              child, task);
+                    child->exception_used.store(true);
+                    child->exception = task->exception;
+                }
                 push(child);
             }
         }

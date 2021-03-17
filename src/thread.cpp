@@ -214,7 +214,7 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
     std::tie(task, index) = pool->queue.pop_or_sleep(stopping_criterion, payload);
 
     if (task) {
-        if (task->func) {
+        if (task->func && !task->exception_used.load()) {
             try {
                 EKT_TRACE("Running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
                 task->func(index, task->payload);
