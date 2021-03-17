@@ -155,6 +155,8 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
         pool = pool_default();
 
     Task *task = pool->queue.alloc(size);
+    task->exception_used.store(false, std::memory_order_relaxed);
+    task->exception = nullptr;
 
     if (has_parent) {
         // Prevent early job submission due to completion of parents
@@ -190,9 +192,6 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
         task->payload_deleter = nullptr;
     }
 
-    task->exception_used.store(false, std::memory_order_relaxed);
-    task->exception = nullptr;
-
     bool push = true;
     if (has_parent) {
         /* Undo the earlier 'wait' increment. If the value is now zero, all
@@ -214,17 +213,24 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
     std::tie(task, index) = pool->queue.pop_or_sleep(stopping_criterion, payload);
 
     if (task) {
-        if (task->func && !task->exception_used.load()) {
-            try {
-                EKT_TRACE("Running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
-                task->func(index, task->payload);
-            } catch (...) {
-                bool value = false;
-                if (task->exception_used.compare_exchange_strong(value, true)) {
-                    EKT_TRACE("Exception caught, storing..");
-                    task->exception = std::current_exception();
-                } else {
-                    EKT_TRACE("Exception caught, ignoring (an exception was already stored).");
+        if (task->func) {
+            if (task->exception_used.load()) {
+                EKT_TRACE(
+                    "Not running callback (task=%p, index=%u) because another "
+                    "work unit of this task generated an exception.",
+                    task, index);
+            } else {
+                try {
+                    EKT_TRACE("Running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
+                    task->func(index, task->payload);
+                } catch (...) {
+                    bool value = false;
+                    if (task->exception_used.compare_exchange_strong(value, true)) {
+                        EKT_TRACE("Exception caught, storing..");
+                        task->exception = std::current_exception();
+                    } else {
+                        EKT_TRACE("Exception caught, ignoring (an exception was already stored).");
+                    }
                 }
             }
         }

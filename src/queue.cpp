@@ -184,15 +184,21 @@ void TaskQueue::release(Task *task, bool high) {
 
             EKT_ASSERT(wait > 0);
 
+            if (task->exception_used.load()) {
+                bool expected = false;
+                if (child->exception_used.compare_exchange_strong(expected, true)) {
+                    EKT_TRACE("Propagating exception to child %p of task %p.",
+                              child, task);
+                    child->exception = task->exception;
+                } else {
+                    EKT_TRACE("Not propagating exception to child %p of "
+                              "task %p (already stored).", child, task);
+                }
+            }
+
             if (wait == 1) {
                 EKT_TRACE("Child %p of task %p is ready for execution.", child,
                           task);
-                if (task->exception_used.load()) {
-                    EKT_TRACE("Propagating exception to child %p of task %p.",
-                              child, task);
-                    child->exception_used.store(true);
-                    child->exception = task->exception;
-                }
                 push(child);
             }
         }
@@ -232,8 +238,21 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
     /* Increase the parent task's reference count to prevent the cleanup
        handler in release() from starting while the following executes. */
     while (true) {
-        if ((uint32_t) refcount == 0)
-            return; // Parent task has already completed
+        if ((uint32_t) refcount == 0) {
+            // Parent task has already completed
+            if (parent->exception_used.load()) {
+                bool expected = false;
+                if (child->exception_used.compare_exchange_strong(expected, true)) {
+                    EKT_TRACE("Propagating exception to child %p of task %p.",
+                              child, parent);
+                    child->exception = parent->exception;
+                } else {
+                    EKT_TRACE("Not propagating exception to child %p of "
+                              "task %p (already stored).", child, parent);
+                }
+            }
+            return;
+        }
 
         if (parent->refcount.compare_exchange_weak(refcount, refcount + 1,
                                                    std::memory_order_release,
