@@ -96,8 +96,15 @@ uint32_t pool_size(Pool *pool) {
 }
 
 void pool_set_size(Pool *pool, uint32_t size) {
-    if (!pool)
-        pool = pool_default();
+    if (!pool) {
+        std::unique_lock<std::mutex> guard(pool_default_lock);
+        pool = pool_default_inst;
+
+        if (!pool) {
+            pool = pool_default_inst = new Pool();
+            EKT_TRACE("pool_create(%p)", pool);
+        }
+    }
 
     EKT_TRACE("pool_set_size(%p, %u)", pool, size);
 
