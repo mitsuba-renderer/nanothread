@@ -89,10 +89,15 @@ void pool_destroy(Pool *pool) {
 }
 
 uint32_t pool_size(Pool *pool) {
-    if (!pool)
-        pool = pool_default();
+    if (!pool) {
+        std::unique_lock<std::mutex> guard(pool_default_lock);
+        pool = pool_default_inst;
+    }
 
-    return pool->workers.size();
+    if (pool)
+        return pool->workers.size();
+    else
+        return std::thread::hardware_concurrency();
 }
 
 void pool_set_size(Pool *pool, uint32_t size) {
