@@ -2,14 +2,14 @@ cmake_minimum_required(VERSION 3.13...3.18)
 
 project(enoki-thread
   DESCRIPTION
-    "Enoki thread library"
+    "Enoki-Thread"
   LANGUAGES
     CXX C
 )
 
 option(ENOKI_THREAD_ENABLE_TESTS "Build test suite?" OFF)
 
-include(cmake/EnokiDefaults.cmake)
+include(ext/cmake-defaults/CMakeLists.txt)
 
 add_library(
   enoki-thread SHARED
