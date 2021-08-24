@@ -42,14 +42,8 @@ target_include_directories(enoki-thread
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-if (NOT MSVC)
-  target_compile_options(enoki-thread PRIVATE -Wall -Wextra)
-  if (U_CMAKE_BUILD_TYPE MATCHES RELEASE OR U_CMAKE_BUILD_TYPE MATCHES MINSIZEREL)
-    target_compile_options(enoki-thread PRIVATE -fvisibility=hidden)
-  endif()
-endif()
-
 target_compile_definitions(enoki-thread PRIVATE -DENOKI_THREAD_BUILD=1)
+set_target_properties(enoki-thread PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 
 if (ENOKI_THREAD_ENABLE_TESTS)
    add_subdirectory(tests)
