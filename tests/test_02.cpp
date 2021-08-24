@@ -8,7 +8,7 @@
 #endif
 
 
-int main(int arc, char** argv) {
+int main(int, char**) {
     uint32_t temp[10000];
 
     memset(temp, 0, sizeof(int) * 1000);
@@ -43,7 +43,7 @@ int main(int arc, char** argv) {
     task_wait(task);
 
     // .. contents of 'temp' are now ready ..
-    for (int i = 0; i < 1000; ++i) {
+    for (uint32_t i = 0; i < 1000; ++i) {
         if (temp[i] != i) {
             fprintf(stderr, "Test failed!\n");
             abort();

@@ -24,7 +24,9 @@ void my_task(uint32_t index, void *payload) {
     ((uint32_t *) payload)[index] = index;
 }
 
-int main(int arc, char** argv) {
+int main(int argc, char** argv) {
+    (void) argc; (void) argv; // Command line arguments unused
+
     uint32_t temp[10000];
 
     memset(temp, 0, sizeof(int) * 1000);
@@ -41,7 +43,7 @@ int main(int arc, char** argv) {
     );
 
     // .. contents of 'temp' are now ready ..
-    for (int i = 0; i < 1000; ++i) {
+    for (uint32_t i = 0; i < 1000; ++i) {
         if (temp[i] != i) {
             fprintf(stderr, "Test failed!\n");
             abort();

@@ -21,7 +21,7 @@ void test01() {
     try {
         ek::parallel_for(
             ek::blocked_range<uint32_t>(0, 1000, 5),
-            [](ek::blocked_range<uint32_t> range) {
+            [](ek::blocked_range<uint32_t> /* range */) {
                 throw std::runtime_error("Hello world!");
             }
         );
@@ -35,7 +35,7 @@ void test01() {
 void test02(bool wait) {
     auto work1 = ek::parallel_for_async(
         ek::blocked_range<uint32_t>(0, 10, 1),
-        [](ek::blocked_range<uint32_t> range) {
+        [](ek::blocked_range<uint32_t> /* range */) {
             my_sleep(10);
             throw std::runtime_error("Hello world!");
         }
@@ -46,7 +46,7 @@ void test02(bool wait) {
 
     auto work2 = ek::parallel_for_async(
         ek::blocked_range<uint32_t>(0, 10, 1),
-        [](ek::blocked_range<uint32_t> range) {
+        [](ek::blocked_range<uint32_t> /* range */) {
             printf("Should never get here!\n");
             abort();
         },
@@ -64,7 +64,7 @@ void test02(bool wait) {
     abort();
 }
 
-int main(int arc, char** argv) {
+int main(int, char**) {
     test01();
     test02(false);
     test02(true);

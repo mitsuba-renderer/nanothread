@@ -17,7 +17,7 @@ Task *tetranacci(Pool *pool, uint32_t i, uint32_t *out) {
     };
 
     Task *rv = enoki::do_async(
-        [tmp, out, i]() {
+        [tmp, out]() {
             *out = tmp[0] + tmp[1] + tmp[2] + tmp[3];
             delete[] tmp;
         }, { task[0], task[1], task[2], task[3] },
@@ -53,7 +53,7 @@ Task * tetranacci_2(Pool *pool, uint32_t i, uint32_t *out) {
     );
 }
 
-int main(int arc, char** argv) {
+int main(int, char**) {
     // Create a worker per CPU thread
     for (int i = 0; i< 100; ++i) {
         printf("Testing with %i threads..\n", i);
