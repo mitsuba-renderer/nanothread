@@ -1,3 +1,6 @@
+# ----------------------------------------------------------
+# Top-level Enoki-Thread CMake file, needs a recent version
+# ----------------------------------------------------------
 cmake_minimum_required(VERSION 3.13...3.18)
 
 project(enoki-thread
@@ -7,9 +10,31 @@ project(enoki-thread
     CXX C
 )
 
+# ----------------------------------------------------------
+#  Optional features available to users
+# ----------------------------------------------------------
+
 option(ENOKI_THREAD_ENABLE_TESTS "Build test suite?" OFF)
 
+# ----------------------------------------------------------
+#  Check if submodules have been checked out, or fail early
+# ----------------------------------------------------------
+
+if (NOT IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/ext/cmake-defaults")
+  message(FATAL_ERROR "The Enoki-JIT dependencies are missing! "
+    "You probably did not clone the project with --recursive. It is possible to recover "
+    "by invoking\n$ git submodule update --init --recursive")
+endif()
+
+# ----------------------------------------------------------
+#  Build defaults for projects by the Realistic Graphics Lab
+# ----------------------------------------------------------
+
 include(ext/cmake-defaults/CMakeLists.txt)
+
+# ----------------------------------------------------------
+#  Compile the Enoki-Thread library
+# ----------------------------------------------------------
 
 add_library(
   enoki-thread SHARED
