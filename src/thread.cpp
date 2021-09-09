@@ -95,7 +95,7 @@ uint32_t pool_size(Pool *pool) {
     }
 
     if (pool)
-        return pool->workers.size();
+        return (uint32_t) pool->workers.size();
     else
         return std::thread::hardware_concurrency();
 }
