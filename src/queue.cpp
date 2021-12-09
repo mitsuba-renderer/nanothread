@@ -154,8 +154,10 @@ Task *TaskQueue::alloc(uint32_t size) {
     task->wait_parents.store(0, std::memory_order_relaxed);
     task->wait_count.store(0, std::memory_order_relaxed);
     task->size = size;
+    memset(&task->time_start, 0, sizeof(task->time_start));
+    memset(&task->time_end, 0, sizeof(task->time_end));
 
-    EKT_TRACE("Created new task %p with size=%u.", task, size);
+    EKT_TRACE("created new task %p with size=%u", task, size);
 
     return task;
 }
@@ -174,12 +176,20 @@ void TaskQueue::release(Task *task, bool high) {
 
     // If all work has completed: schedule children and free payload
     if (!high && ref_lo == 0) {
-        EKT_TRACE("All work associated with task %p has completed.", task);
+        EKT_TRACE("all work associated with task %p has completed.", task);
+
+        if (profile_tasks) {
+            #if defined(_WIN32)
+                QueryPerformanceCounter(&task->time_end);
+            #else
+                clock_gettime(CLOCK_MONOTONIC, &task->time_end);
+            #endif
+        }
 
         for (Task *child : task->children) {
             uint32_t wait = child->wait_parents.fetch_sub(1);
 
-            EKT_TRACE("Notifying child %p of task %p: wait=%u", child, task,
+            EKT_TRACE("notifying child %p of task %p: wait=%u", child, task,
                       wait - 1);
 
             EKT_ASSERT(wait > 0);
@@ -187,11 +197,11 @@ void TaskQueue::release(Task *task, bool high) {
             if (task->exception_used.load()) {
                 bool expected = false;
                 if (child->exception_used.compare_exchange_strong(expected, true)) {
-                    EKT_TRACE("Propagating exception to child %p of task %p.",
+                    EKT_TRACE("propagating exception to child %p of task %p.",
                               child, task);
                     child->exception = task->exception;
                 } else {
-                    EKT_TRACE("Not propagating exception to child %p of "
+                    EKT_TRACE("not propagating exception to child %p of "
                               "task %p (already stored).", child, task);
                 }
             }
@@ -214,7 +224,7 @@ void TaskQueue::release(Task *task, bool high) {
         // Nobody holds any references at this point, recycle task
 
         EKT_ASSERT(ref_lo == 0);
-        EKT_TRACE("All usage of task %p is done, recycling.", task);
+        EKT_TRACE("all usage of task %p is done, recycling.", task);
 
         Task::Ptr node = ldar(recycle);
         while (true) {
@@ -243,11 +253,11 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
             if (parent->exception_used.load()) {
                 bool expected = false;
                 if (child->exception_used.compare_exchange_strong(expected, true)) {
-                    EKT_TRACE("Propagating exception to child %p of task %p.",
+                    EKT_TRACE("propagating exception to child %p of task %p.",
                               child, parent);
                     child->exception = parent->exception;
                 } else {
-                    EKT_TRACE("Not propagating exception to child %p of "
+                    EKT_TRACE("not propagating exception to child %p of "
                               "task %p (already stored).", child, parent);
                 }
             }
@@ -267,13 +277,18 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
     uint32_t wait = ++child->wait_parents;
     (void) wait;
 
-    EKT_TRACE("Registering dependency: parent=%p, child=%p, child->wait=%u",
+    EKT_TRACE("registering dependency: parent=%p, child=%p, child->wait=%u",
               parent, child, wait);
 
     /* Undo the parent->refcount change. If the task completed in the
        meantime, child->wait_parents will also be decremented by
        this call. */
     release(parent);
+}
+
+void TaskQueue::retain(Task *task) {
+    EKT_TRACE("retain(task=%p)", task);
+    task->refcount.fetch_add(high_bit);
 }
 
 void TaskQueue::push(Task *task) {
@@ -362,8 +377,17 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
         pause();
     }
 
-    if (task)
+    if (task) {
         EKT_TRACE("pop(task=%p, index=%u)", task, index);
+
+        if (index == 0 && profile_tasks) {
+            #if defined(_WIN32)
+                QueryPerformanceCounter(&task->time_start);
+            #else
+                clock_gettime(CLOCK_MONOTONIC, &task->time_start);
+            #endif
+        }
+    }
 
     return { task, index };
 }
@@ -376,18 +400,20 @@ void TaskQueue::wakeup() {
     sleep_cv.notify_all();
 }
 
+#if defined(EKT_DEBUG)
 double time_milliseconds() {
-#if defined(_WIN32)
-    LARGE_INTEGER ticks, ticks_per_sec;
-    QueryPerformanceCounter(&ticks);
-    QueryPerformanceFrequency(&ticks_per_sec);
-    return (double) (ticks.QuadPart * 1000) / (double) ticks_per_sec.QuadPart;
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000.0;
-#endif
+    #if defined(_WIN32)
+        LARGE_INTEGER ticks, ticks_per_sec;
+        QueryPerformanceCounter(&ticks);
+        QueryPerformanceFrequency(&ticks_per_sec);
+        return (double) (ticks.QuadPart * 1000) / (double) ticks_per_sec.QuadPart;
+    #else
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return ts.tv_sec * 1000 + ts.tv_nsec / 1000000.0;
+    #endif
 }
+#endif
 
 std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload) {
     std::pair<Task *, uint32_t> result(nullptr, 0);

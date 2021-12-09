@@ -78,6 +78,19 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_size(Pool *pool ENOKI_THREAD_DEF(0));
 extern ENOKI_THREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
 
 /**
+ * \brief Enable/disable time profiling
+ *
+ * Profiling must be enabled to use the \ref task_time() function.
+ *
+ * \param value
+ *     A nonzero value indicates that profiling should be enabled.
+ */
+extern ENOKI_THREAD_EXPORT void pool_set_profile(int value);
+
+/// Check whether time profiling is enabled (global setting)
+extern ENOKI_THREAD_EXPORT int pool_profile();
+
+/**
  * \brief Return a unique number identifying the current worker thread
  *
  * When called from a thread pool worker (e.g. while executing a parallel
@@ -253,6 +266,28 @@ extern ENOKI_THREAD_EXPORT void task_wait(Task *task) ENOKI_THREAD_THROW;
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
 extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task) ENOKI_THREAD_THROW;
+
+/**
+ * \brief Return the time consumed by the task in milliseconds
+ *
+ * To use this function, you must first enable time profiling via \ref
+ * pool_set_profile() before launching tasks.
+ */
+extern ENOKI_THREAD_EXPORT float task_time(Task *task) ENOKI_THREAD_THROW;
+
+/*
+ * \brief Increase the reference count of a task
+ *
+ * In advanced use case, it may be helpful if multiple parts of the system can
+ * hold references to a task (and e.g. query timing information or
+ * completeness). The \c task_retain operation enables this by increasing an
+ * internal reference counter so that \ref task_release() must be called
+ * multiple times before the task is actually released.
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the operation is a no-op.
+ */
+extern ENOKI_THREAD_EXPORT void task_retain(Task *task);
 
 /// Convenience wrapper around task_submit_dep(), but without dependencies
 static inline

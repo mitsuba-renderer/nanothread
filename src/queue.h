@@ -15,6 +15,10 @@
 #include <condition_variable>
 #include <cstring>
 
+#if defined(_WIN32)
+#  include <windows.h>
+#endif
+
 struct Pool;
 
 constexpr uint64_t high_bit  = (uint64_t) 0x0000000100000000ull;
@@ -113,6 +117,12 @@ struct Task {
     /// Pointer to an exception in case the task failed
     std::exception_ptr exception;
 
+#if !defined(_WIN32)
+    timespec time_start, time_end;
+#else
+    LARGE_INTEGER time_start, time_end;
+#endif
+
     /// Fixed-size payload storage region
     alignas(8) uint8_t payload_storage[256];
 
@@ -180,6 +190,9 @@ public:
      */
     void release(Task *task, bool high = false);
 
+    /// Increase the reference count of a task.
+    void retain(Task *task);
+
     /// Append a task at the end of the queue
     void push(Task *task);
 
@@ -232,6 +245,8 @@ private:
 
 
 extern "C" uint32_t pool_thread_id();
+
+extern int profile_tasks;
 
 #define EKT_STR_2(x) #x
 #define EKT_STR(x)   EKT_STR_2(x)

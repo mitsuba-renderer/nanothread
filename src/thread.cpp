@@ -129,6 +129,16 @@ void pool_set_size(Pool *pool, uint32_t size) {
     }
 }
 
+int profile_tasks = false;
+
+int pool_profile() {
+    return (int) profile_tasks;
+}
+
+void pool_set_profile(int value) {
+    profile_tasks = (bool) value;
+}
+
 Task *task_submit_dep(Pool *pool, const Task *const *parent,
                       uint32_t parent_count, uint32_t size,
                       void (*func)(uint32_t, void *), void *payload,
@@ -150,13 +160,52 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
     // If this is a small work unit, execute it right away
     if (size == 1 && !has_parent && async == 0) {
-        EKT_TRACE("task_submit_dep(): task is small, executing right away.");
+        EKT_TRACE("task_submit_dep(): task is small, executing right away");
 
-        if (func)
-            func(0, payload);
-        if (payload_deleter)
-            payload_deleter(payload);
-        return nullptr;
+        if (!profile_tasks) {
+            if (func)
+                func(0, payload);
+
+            if (payload_deleter)
+                payload_deleter(payload);
+
+            // Don't even return a task..
+            return nullptr;
+        } else {
+            if (!pool)
+                pool = pool_default();
+
+            Task *task = pool->queue.alloc(size);
+
+            #if defined(_WIN32)
+                QueryPerformanceCounter(&task->time_start);
+            #else
+                clock_gettime(CLOCK_MONOTONIC, &task->time_start);
+            #endif
+
+            if (func)
+                func(0, payload);
+
+            #if defined(_WIN32)
+                QueryPerformanceCounter(&task->time_end);
+            #else
+                clock_gettime(CLOCK_MONOTONIC, &task->time_end);
+            #endif
+
+            if (payload_deleter)
+                payload_deleter(payload);
+
+            task->refcount.store(high_bit, std::memory_order_relaxed);
+            task->exception_used.store(false, std::memory_order_relaxed);
+            task->exception = nullptr;
+            task->size = size;
+            task->func = func;
+            task->pool = pool;
+            task->payload = nullptr;
+            task->payload_deleter = nullptr;
+
+            return task;
+        }
     }
 
     // Size 0 is equivalent to size 1, but without the above optimization
@@ -228,20 +277,20 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
         if (task->func) {
             if (task->exception_used.load()) {
                 EKT_TRACE(
-                    "Not running callback (task=%p, index=%u) because another "
-                    "work unit of this task generated an exception.",
+                    "not running callback (task=%p, index=%u) because another "
+                    "work unit of this task generated an exception",
                     task, index);
             } else {
                 try {
-                    EKT_TRACE("Running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
+                    EKT_TRACE("running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
                     task->func(index, task->payload);
                 } catch (...) {
                     bool value = false;
                     if (task->exception_used.compare_exchange_strong(value, true)) {
-                        EKT_TRACE("Exception caught, storing..");
+                        EKT_TRACE("exception caught, storing..");
                         task->exception = std::current_exception();
                     } else {
-                        EKT_TRACE("Exception caught, ignoring (an exception was already stored).");
+                        EKT_TRACE("exception caught, ignoring (an exception was already stored)");
                     }
                 }
             }
@@ -275,6 +324,11 @@ void task_wait(Task *task) {
     }
 }
 
+void task_retain(Task *task) {
+    if (task)
+        task->pool->queue.retain(task);
+}
+
 void task_release(Task *task) {
     if (task)
         task->pool->queue.release(task, true);
@@ -290,6 +344,29 @@ void task_wait_and_release(Task *task) ENOKI_THREAD_THROW {
     task_release(task);
 }
 
+#if defined(_WIN32)
+static float timer_frequency_scale = 0.f;
+#endif
+
+ENOKI_THREAD_EXPORT float task_time(Task *task) ENOKI_THREAD_THROW {
+    if (!task)
+        return 0;
+
+#if !defined(_WIN32)
+    return (task->time_end.tv_sec - task->time_start.tv_sec) * 1e3f +
+           (task->time_end.tv_nsec - task->time_start.tv_nsec) * 1e-6f;
+#else
+    if (timer_frequency_scale == 0.f) {
+        LARGE_INTEGER timer_frequency;
+        QueryPerformanceFrequency(&timer_frequency);
+        timer_frequency_scale = 1e3f / timer_frequency.QuadPart;
+    }
+
+    return timer_frequency_scale *
+           (task->time_end.QuadPart - task->time_start.QuadPart);
+#endif
+}
+
 Worker::Worker(Pool *pool, uint32_t id)
     : pool(pool), id(id), stop(false) {
     thread = std::thread(&Worker::run, this);
@@ -300,7 +377,7 @@ Worker::~Worker() { thread.join(); }
 void Worker::run() {
     thread_id_tls = id;
 
-    EKT_TRACE("worker started.");
+    EKT_TRACE("worker started");
 
     #if defined(_WIN32)
         wchar_t buf[24];
@@ -320,7 +397,7 @@ void Worker::run() {
         pool_execute_task(
             pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop);
 
-    EKT_TRACE("worker stopped.");
+    EKT_TRACE("worker stopped");
 
     thread_id_tls = 0;
 }
