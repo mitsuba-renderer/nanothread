@@ -20,7 +20,7 @@
 #    define ENOKI_THREAD_EXPORT    __declspec(dllimport)
 #  endif
 #else
-#  define ENOKI_THREAD_EXPORT    __attribute__ ((visibility("default")))
+#  define ENOKI_THREAD_EXPORT      __attribute__ ((visibility("default")))
 #endif
 
 #if defined(__cplusplus)
@@ -42,13 +42,21 @@ extern "C" {
 #endif
 
 /**
- * \brief Create a new thread pool with the specified number of threads
+ * \brief Create a new thread pool
  *
- * The default value \c ENOKI_THREAD_AUTO choses a thread count equal to the
- * number of available cores.
+ * \param size
+ *     Specifies the desired number of threads. The default value of
+ *     \c ENOKI_THREAD_AUTO choses a thread count equal to the number of
+ *     available cores.
+ *
+ * \param ftz
+ *     Should denormalized floating point numbers be flushed to zero?
+ *     The pool workers will initialize their floating point control
+ *     registers accordingly.
  */
 extern ENOKI_THREAD_EXPORT Pool *
-pool_create(uint32_t size ENOKI_THREAD_DEF(ENOKI_THREAD_AUTO));
+pool_create(uint32_t size ENOKI_THREAD_DEF(ENOKI_THREAD_AUTO),
+            int ftz ENOKI_THREAD_DEF(1));
 
 /**
  * \brief Destroy the thread pool and discard remaining unfinished work.

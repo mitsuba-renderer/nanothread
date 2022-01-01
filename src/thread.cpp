@@ -18,6 +18,12 @@
 #  include <processthreadsapi.h>
 #endif
 
+#if defined(_MSC_VER)
+#  include <intrin.h>
+#elif defined(__SSE2__)
+#  include <pmmintrin.h>
+#endif
+
 struct Worker;
 
 /// TLS variable storing an ID of each thread
@@ -38,6 +44,8 @@ struct Pool {
     /// Number of idle workers that have gone to sleep
     std::atomic<uint32_t> asleep;
 
+    /// Should denormalized floating point numbers be flushed to zero?
+    bool ftz = true;
 };
 
 struct Worker {
@@ -45,8 +53,9 @@ struct Worker {
     std::thread thread;
     uint32_t id;
     bool stop;
+    bool ftz;
 
-    Worker(Pool *pool, uint32_t id);
+    Worker(Pool *pool, uint32_t id, bool ftz);
     ~Worker();
     void run();
 };
@@ -68,8 +77,9 @@ Pool *pool_default() {
     return pool_default_inst;
 }
 
-Pool *pool_create(uint32_t size) {
+Pool *pool_create(uint32_t size, int ftz) {
     Pool *pool = new Pool();
+    pool->ftz = ftz != 0;
     if (size == (uint32_t) -1)
         size = std::thread::hardware_concurrency();
     EKT_TRACE("pool_create(%p)", pool);
@@ -118,7 +128,7 @@ void pool_set_size(Pool *pool, uint32_t size) {
         // Launch extra worker threads
         for (int i = 0; i < diff; ++i)
             pool->workers.push_back(std::unique_ptr<Worker>(
-                new Worker(pool, (uint32_t) pool->workers.size() + 1)));
+                new Worker(pool, (uint32_t) pool->workers.size() + 1, pool->ftz)));
     } else if (diff < 0) {
         // Remove worker threads (destructor calls join())
         for (int i = diff; i != 0; ++i)
@@ -300,9 +310,31 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
     }
 }
 
+#if defined(__SSE2__)
+struct FTZGuard {
+    FTZGuard(bool enable) : enable(enable) {
+        if (enable) {
+            csr = _mm_getcsr();
+            _mm_setcsr(csr | (_MM_FLUSH_ZERO_ON | _MM_DENORMALS_ZERO_ON));
+        }
+    }
+
+    ~FTZGuard() {
+        if (enable)
+            _mm_setcsr(csr);
+    }
+
+    bool enable;
+    int csr;
+};
+#else
+struct FTZGuard { FTZGuard(bool) { } };
+#endif
+
 void task_wait(Task *task) {
     if (task) {
         Pool *pool = task->pool;
+        FTZGuard ftz_guard(pool->ftz);
 
         // Signal that we are waiting for this task
         task->wait_count++;
@@ -367,8 +399,8 @@ ENOKI_THREAD_EXPORT float task_time(Task *task) ENOKI_THREAD_THROW {
 #endif
 }
 
-Worker::Worker(Pool *pool, uint32_t id)
-    : pool(pool), id(id), stop(false) {
+Worker::Worker(Pool *pool, uint32_t id, bool ftz)
+    : pool(pool), id(id), stop(false), ftz(ftz) {
     thread = std::thread(&Worker::run, this);
 }
 
@@ -393,6 +425,7 @@ void Worker::run() {
         #endif
     #endif
 
+    FTZGuard ftz_guard(ftz);
     while (!stop)
         pool_execute_task(
             pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop);
