@@ -1,4 +1,4 @@
-#include <enoki-thread/thread.h>
+#include <nanothread/nanothread.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
     memset(temp, 0, sizeof(int) * 1000);
 
     // Create a worker per CPU thread
-    Pool *pool = pool_create(100);
+    Pool *pool = pool_create(100, 0);
 
     // Synchronous interface: submit a task and wait for it to complete
     task_submit_and_wait(

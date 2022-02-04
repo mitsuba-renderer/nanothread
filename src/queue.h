@@ -1,5 +1,5 @@
 /*
-    src/queue.h -- Lock-free task queue implementation used by enoki-thread
+    src/queue.h -- Lock-free task queue implementation used by nanothread
 
     Copyright (c) 2021 Wenzel Jakob <wenzel.jakob@epfl.ch>
 
@@ -248,21 +248,21 @@ extern "C" uint32_t pool_thread_id();
 
 extern int profile_tasks;
 
-#define EKT_STR_2(x) #x
-#define EKT_STR(x)   EKT_STR_2(x)
+#define DJT_STR_2(x) #x
+#define DJT_STR(x)   DJT_STR_2(x)
 
-// #define EKT_DEBUG
-#if defined(EKT_DEBUG)
-#  define EKT_TRACE(fmt, ...)                                                  \
+// #define DJT_DEBUG
+#if defined(DJT_DEBUG)
+#  define DJT_TRACE(fmt, ...)                                                  \
       fprintf(stderr, "%03u: " fmt "\n", pool_thread_id(), ##__VA_ARGS__)
 #else
-#  define EKT_TRACE(fmt, ...) do { } while (0)
+#  define DJT_TRACE(fmt, ...) do { } while (0)
 #endif
 
-#define EKT_ASSERT(x)                                                          \
+#define DJT_ASSERT(x)                                                          \
     if (!(x)) {                                                                \
         fprintf(stderr, "Assertion failed in " __FILE__                        \
-                        ":" EKT_STR(__LINE__) ": " #x "\n");                   \
+                        ":" DJT_STR(__LINE__) ": " #x "\n");                   \
         abort();                                                               \
     }
 

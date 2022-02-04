@@ -1,4 +1,4 @@
-#include <enoki-thread/thread.h>
+#include <nanothread/nanothread.h>
 #include <stdexcept>
 
 #if defined(_WIN32)
@@ -15,13 +15,13 @@ void my_sleep(uint32_t amt) {
 #endif
 }
 
-namespace ek = enoki;
+namespace dr = drjit;
 
 void test01() {
     try {
-        ek::parallel_for(
-            ek::blocked_range<uint32_t>(0, 1000, 5),
-            [](ek::blocked_range<uint32_t> /* range */) {
+        dr::parallel_for(
+            dr::blocked_range<uint32_t>(0, 1000, 5),
+            [](dr::blocked_range<uint32_t> /* range */) {
                 throw std::runtime_error("Hello world!");
             }
         );
@@ -33,9 +33,9 @@ void test01() {
 }
 
 void test02(bool wait) {
-    auto work1 = ek::parallel_for_async(
-        ek::blocked_range<uint32_t>(0, 10, 1),
-        [](ek::blocked_range<uint32_t> /* range */) {
+    auto work1 = dr::parallel_for_async(
+        dr::blocked_range<uint32_t>(0, 10, 1),
+        [](dr::blocked_range<uint32_t> /* range */) {
             my_sleep(10);
             throw std::runtime_error("Hello world!");
         }
@@ -44,9 +44,9 @@ void test02(bool wait) {
     if (wait)
         my_sleep(100);
 
-    auto work2 = ek::parallel_for_async(
-        ek::blocked_range<uint32_t>(0, 10, 1),
-        [](ek::blocked_range<uint32_t> /* range */) {
+    auto work2 = dr::parallel_for_async(
+        dr::blocked_range<uint32_t>(0, 10, 1),
+        [](dr::blocked_range<uint32_t> /* range */) {
             printf("Should never get here!\n");
             abort();
         },

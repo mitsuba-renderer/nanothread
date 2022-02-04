@@ -1,5 +1,5 @@
 /*
-    enoki-thread/thread.h -- Simple thread pool with a task-based API
+    nanothread/nanothread.h -- Simple thread pool with a task-based API
 
     Copyright (c) 2021 Wenzel Jakob <wenzel.jakob@epfl.ch>
 
@@ -14,31 +14,31 @@
 #include <stdio.h>
 
 #if defined(_MSC_VER)
-#  if defined(ENOKI_THREAD_BUILD)
-#    define ENOKI_THREAD_EXPORT    __declspec(dllexport)
+#  if defined(NANOTHREAD_BUILD)
+#    define NANOTHREAD_EXPORT    __declspec(dllexport)
 #  else
-#    define ENOKI_THREAD_EXPORT    __declspec(dllimport)
+#    define NANOTHREAD_EXPORT    __declspec(dllimport)
 #  endif
 #else
-#  define ENOKI_THREAD_EXPORT      __attribute__ ((visibility("default")))
+#  define NANOTHREAD_EXPORT      __attribute__ ((visibility("default")))
 #endif
 
 #if defined(__cplusplus)
-#  define ENOKI_THREAD_DEF(x) = x
+#  define NANOTHREAD_DEF(x) = x
 #else
-#  define ENOKI_THREAD_DEF(x)
+#  define NANOTHREAD_DEF(x)
 #endif
 
-#define ENOKI_THREAD_AUTO ((uint32_t) -1)
+#define NANOTHREAD_AUTO ((uint32_t) -1)
 
 typedef struct Pool Pool;
 typedef struct Task Task;
 
 #if defined(__cplusplus)
-#define ENOKI_THREAD_THROW     noexcept(false)
+#define NANOTHREAD_THROW     noexcept(false)
 extern "C" {
 #else
-#define ENOKI_THREAD_THROW
+#define NANOTHREAD_THROW
 #endif
 
 /**
@@ -46,7 +46,7 @@ extern "C" {
  *
  * \param size
  *     Specifies the desired number of threads. The default value of
- *     \c ENOKI_THREAD_AUTO choses a thread count equal to the number of
+ *     \c NANOTHREAD_AUTO choses a thread count equal to the number of
  *     available cores.
  *
  * \param ftz
@@ -54,9 +54,9 @@ extern "C" {
  *     The pool workers will initialize their floating point control
  *     registers accordingly.
  */
-extern ENOKI_THREAD_EXPORT Pool *
-pool_create(uint32_t size ENOKI_THREAD_DEF(ENOKI_THREAD_AUTO),
-            int ftz ENOKI_THREAD_DEF(1));
+extern NANOTHREAD_EXPORT Pool *
+pool_create(uint32_t size NANOTHREAD_DEF(NANOTHREAD_AUTO),
+            int ftz NANOTHREAD_DEF(1));
 
 /**
  * \brief Destroy the thread pool and discard remaining unfinished work.
@@ -67,7 +67,7 @@ pool_create(uint32_t size ENOKI_THREAD_DEF(ENOKI_THREAD_AUTO),
  * \param pool
  *     The thread pool to destroy. \c nullptr refers to the default pool.
  */
-extern ENOKI_THREAD_EXPORT void pool_destroy(Pool *pool ENOKI_THREAD_DEF(0));
+extern NANOTHREAD_EXPORT void pool_destroy(Pool *pool NANOTHREAD_DEF(0));
 
 /**
  * \brief Return the number of threads that are part of the pool
@@ -75,7 +75,7 @@ extern ENOKI_THREAD_EXPORT void pool_destroy(Pool *pool ENOKI_THREAD_DEF(0));
  * \param pool
  *     The thread pool to query. \c nullptr refers to the default pool.
  */
-extern ENOKI_THREAD_EXPORT uint32_t pool_size(Pool *pool ENOKI_THREAD_DEF(0));
+extern NANOTHREAD_EXPORT uint32_t pool_size(Pool *pool NANOTHREAD_DEF(0));
 
 /**
  * \brief Resize the thread pool to the given number of threads
@@ -83,7 +83,7 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_size(Pool *pool ENOKI_THREAD_DEF(0));
  * \param pool
  *     The thread pool to resize. \c nullptr refers to the default pool.
  */
-extern ENOKI_THREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
+extern NANOTHREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
 
 /**
  * \brief Enable/disable time profiling
@@ -93,10 +93,10 @@ extern ENOKI_THREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
  * \param value
  *     A nonzero value indicates that profiling should be enabled.
  */
-extern ENOKI_THREAD_EXPORT void pool_set_profile(int value);
+extern NANOTHREAD_EXPORT void pool_set_profile(int value);
 
 /// Check whether time profiling is enabled (global setting)
-extern ENOKI_THREAD_EXPORT int pool_profile();
+extern NANOTHREAD_EXPORT int pool_profile();
 
 /**
  * \brief Return a unique number identifying the current worker thread
@@ -108,7 +108,7 @@ extern ENOKI_THREAD_EXPORT int pool_profile();
  * The IDs of separate thread pools overlap. When the current thread is not a
  * thread pool worker, the function returns zero.
  */
-extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
+extern NANOTHREAD_EXPORT uint32_t pool_thread_id();
 
 /*
  * \brief Submit a new task to a thread pool
@@ -211,16 +211,16 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  *     <tt>size==0</tt>, or when <tt>size==1</tt> and the task was executed
  *     synchronously.)
  */
-extern ENOKI_THREAD_EXPORT
+extern NANOTHREAD_EXPORT
 Task *task_submit_dep(Pool *pool,
                       const Task * const *parent,
                       uint32_t parent_count,
-                      uint32_t size ENOKI_THREAD_DEF(1),
-                      void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
-                      void *payload ENOKI_THREAD_DEF(0),
-                      uint32_t payload_size ENOKI_THREAD_DEF(0),
-                      void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0),
-                      int always_async ENOKI_THREAD_DEF(0));
+                      uint32_t size NANOTHREAD_DEF(1),
+                      void (*func)(uint32_t, void *) NANOTHREAD_DEF(0),
+                      void *payload NANOTHREAD_DEF(0),
+                      uint32_t payload_size NANOTHREAD_DEF(0),
+                      void (*payload_deleter)(void *) NANOTHREAD_DEF(0),
+                      int always_async NANOTHREAD_DEF(0));
 
 /*
  * \brief Release a task handle so that it can eventually be reused
@@ -240,7 +240,7 @@ Task *task_submit_dep(Pool *pool,
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_release(Task *task);
+extern NANOTHREAD_EXPORT void task_release(Task *task);
 
 /*
  * \brief Wait for the completion of the specified task
@@ -256,7 +256,7 @@ extern ENOKI_THREAD_EXPORT void task_release(Task *task);
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_wait(Task *task) ENOKI_THREAD_THROW;
+extern NANOTHREAD_EXPORT void task_wait(Task *task) NANOTHREAD_THROW;
 
 /*
  * \brief Wait for the completion of the specified task and release its handle
@@ -273,7 +273,7 @@ extern ENOKI_THREAD_EXPORT void task_wait(Task *task) ENOKI_THREAD_THROW;
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task) ENOKI_THREAD_THROW;
+extern NANOTHREAD_EXPORT void task_wait_and_release(Task *task) NANOTHREAD_THROW;
 
 /**
  * \brief Return the time consumed by the task in milliseconds
@@ -281,7 +281,7 @@ extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task) ENOKI_THREAD_T
  * To use this function, you must first enable time profiling via \ref
  * pool_set_profile() before launching tasks.
  */
-extern ENOKI_THREAD_EXPORT float task_time(Task *task) ENOKI_THREAD_THROW;
+extern NANOTHREAD_EXPORT float task_time(Task *task) NANOTHREAD_THROW;
 
 /*
  * \brief Increase the reference count of a task
@@ -295,17 +295,17 @@ extern ENOKI_THREAD_EXPORT float task_time(Task *task) ENOKI_THREAD_THROW;
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_retain(Task *task);
+extern NANOTHREAD_EXPORT void task_retain(Task *task);
 
 /// Convenience wrapper around task_submit_dep(), but without dependencies
 static inline
 Task *task_submit(Pool *pool,
-                  uint32_t size ENOKI_THREAD_DEF(1),
-                  void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
-                  void *payload ENOKI_THREAD_DEF(0),
-                  uint32_t payload_size ENOKI_THREAD_DEF(0),
-                  void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0),
-                  int always_async ENOKI_THREAD_DEF(0)) {
+                  uint32_t size NANOTHREAD_DEF(1),
+                  void (*func)(uint32_t, void *) NANOTHREAD_DEF(0),
+                  void *payload NANOTHREAD_DEF(0),
+                  uint32_t payload_size NANOTHREAD_DEF(0),
+                  void (*payload_deleter)(void *) NANOTHREAD_DEF(0),
+                  int always_async NANOTHREAD_DEF(0)) {
 
     return task_submit_dep(pool, 0, 0, size, func, payload, payload_size,
                            payload_deleter, always_async);
@@ -314,9 +314,9 @@ Task *task_submit(Pool *pool,
 /// Convenience wrapper around task_submit(), but fully synchronous
 static inline
 void task_submit_and_wait(Pool *pool,
-                          uint32_t size ENOKI_THREAD_DEF(1),
-                          void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
-                          void *payload ENOKI_THREAD_DEF(0)) {
+                          uint32_t size NANOTHREAD_DEF(1),
+                          void (*func)(uint32_t, void *) NANOTHREAD_DEF(0),
+                          void *payload NANOTHREAD_DEF(0)) {
 
     Task *task = task_submit(pool, size, func, payload, 0, 0, 0);
     task_wait_and_release(task);
@@ -327,7 +327,7 @@ void task_submit_and_wait(Pool *pool,
 
 #include <utility>
 
-namespace enoki {
+namespace drjit {
     template <typename Int> struct blocked_range {
     public:
         blocked_range(Int begin, Int end, Int block_size = 1)
