@@ -1,5 +1,5 @@
 /*
-    enoki-thread/thread.h -- Simple thread pool with a task-based API
+    drjit-thread/thread.h -- Simple thread pool with a task-based API
 
     Copyright (c) 2021 Wenzel Jakob <wenzel.jakob@epfl.ch>
 
@@ -14,31 +14,31 @@
 #include <stdio.h>
 
 #if defined(_MSC_VER)
-#  if defined(ENOKI_THREAD_BUILD)
-#    define ENOKI_THREAD_EXPORT    __declspec(dllexport)
+#  if defined(DRJIT_THREAD_BUILD)
+#    define DRJIT_THREAD_EXPORT    __declspec(dllexport)
 #  else
-#    define ENOKI_THREAD_EXPORT    __declspec(dllimport)
+#    define DRJIT_THREAD_EXPORT    __declspec(dllimport)
 #  endif
 #else
-#  define ENOKI_THREAD_EXPORT      __attribute__ ((visibility("default")))
+#  define DRJIT_THREAD_EXPORT      __attribute__ ((visibility("default")))
 #endif
 
 #if defined(__cplusplus)
-#  define ENOKI_THREAD_DEF(x) = x
+#  define DRJIT_THREAD_DEF(x) = x
 #else
-#  define ENOKI_THREAD_DEF(x)
+#  define DRJIT_THREAD_DEF(x)
 #endif
 
-#define ENOKI_THREAD_AUTO ((uint32_t) -1)
+#define DRJIT_THREAD_AUTO ((uint32_t) -1)
 
 typedef struct Pool Pool;
 typedef struct Task Task;
 
 #if defined(__cplusplus)
-#define ENOKI_THREAD_THROW     noexcept(false)
+#define DRJIT_THREAD_THROW     noexcept(false)
 extern "C" {
 #else
-#define ENOKI_THREAD_THROW
+#define DRJIT_THREAD_THROW
 #endif
 
 /**
@@ -46,7 +46,7 @@ extern "C" {
  *
  * \param size
  *     Specifies the desired number of threads. The default value of
- *     \c ENOKI_THREAD_AUTO choses a thread count equal to the number of
+ *     \c DRJIT_THREAD_AUTO choses a thread count equal to the number of
  *     available cores.
  *
  * \param ftz
@@ -54,9 +54,9 @@ extern "C" {
  *     The pool workers will initialize their floating point control
  *     registers accordingly.
  */
-extern ENOKI_THREAD_EXPORT Pool *
-pool_create(uint32_t size ENOKI_THREAD_DEF(ENOKI_THREAD_AUTO),
-            int ftz ENOKI_THREAD_DEF(1));
+extern DRJIT_THREAD_EXPORT Pool *
+pool_create(uint32_t size DRJIT_THREAD_DEF(DRJIT_THREAD_AUTO),
+            int ftz DRJIT_THREAD_DEF(1));
 
 /**
  * \brief Destroy the thread pool and discard remaining unfinished work.
@@ -67,7 +67,7 @@ pool_create(uint32_t size ENOKI_THREAD_DEF(ENOKI_THREAD_AUTO),
  * \param pool
  *     The thread pool to destroy. \c nullptr refers to the default pool.
  */
-extern ENOKI_THREAD_EXPORT void pool_destroy(Pool *pool ENOKI_THREAD_DEF(0));
+extern DRJIT_THREAD_EXPORT void pool_destroy(Pool *pool DRJIT_THREAD_DEF(0));
 
 /**
  * \brief Return the number of threads that are part of the pool
@@ -75,7 +75,7 @@ extern ENOKI_THREAD_EXPORT void pool_destroy(Pool *pool ENOKI_THREAD_DEF(0));
  * \param pool
  *     The thread pool to query. \c nullptr refers to the default pool.
  */
-extern ENOKI_THREAD_EXPORT uint32_t pool_size(Pool *pool ENOKI_THREAD_DEF(0));
+extern DRJIT_THREAD_EXPORT uint32_t pool_size(Pool *pool DRJIT_THREAD_DEF(0));
 
 /**
  * \brief Resize the thread pool to the given number of threads
@@ -83,7 +83,7 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_size(Pool *pool ENOKI_THREAD_DEF(0));
  * \param pool
  *     The thread pool to resize. \c nullptr refers to the default pool.
  */
-extern ENOKI_THREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
+extern DRJIT_THREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
 
 /**
  * \brief Enable/disable time profiling
@@ -93,10 +93,10 @@ extern ENOKI_THREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
  * \param value
  *     A nonzero value indicates that profiling should be enabled.
  */
-extern ENOKI_THREAD_EXPORT void pool_set_profile(int value);
+extern DRJIT_THREAD_EXPORT void pool_set_profile(int value);
 
 /// Check whether time profiling is enabled (global setting)
-extern ENOKI_THREAD_EXPORT int pool_profile();
+extern DRJIT_THREAD_EXPORT int pool_profile();
 
 /**
  * \brief Return a unique number identifying the current worker thread
@@ -108,7 +108,7 @@ extern ENOKI_THREAD_EXPORT int pool_profile();
  * The IDs of separate thread pools overlap. When the current thread is not a
  * thread pool worker, the function returns zero.
  */
-extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
+extern DRJIT_THREAD_EXPORT uint32_t pool_thread_id();
 
 /*
  * \brief Submit a new task to a thread pool
@@ -211,16 +211,16 @@ extern ENOKI_THREAD_EXPORT uint32_t pool_thread_id();
  *     <tt>size==0</tt>, or when <tt>size==1</tt> and the task was executed
  *     synchronously.)
  */
-extern ENOKI_THREAD_EXPORT
+extern DRJIT_THREAD_EXPORT
 Task *task_submit_dep(Pool *pool,
                       const Task * const *parent,
                       uint32_t parent_count,
-                      uint32_t size ENOKI_THREAD_DEF(1),
-                      void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
-                      void *payload ENOKI_THREAD_DEF(0),
-                      uint32_t payload_size ENOKI_THREAD_DEF(0),
-                      void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0),
-                      int always_async ENOKI_THREAD_DEF(0));
+                      uint32_t size DRJIT_THREAD_DEF(1),
+                      void (*func)(uint32_t, void *) DRJIT_THREAD_DEF(0),
+                      void *payload DRJIT_THREAD_DEF(0),
+                      uint32_t payload_size DRJIT_THREAD_DEF(0),
+                      void (*payload_deleter)(void *) DRJIT_THREAD_DEF(0),
+                      int always_async DRJIT_THREAD_DEF(0));
 
 /*
  * \brief Release a task handle so that it can eventually be reused
@@ -240,7 +240,7 @@ Task *task_submit_dep(Pool *pool,
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_release(Task *task);
+extern DRJIT_THREAD_EXPORT void task_release(Task *task);
 
 /*
  * \brief Wait for the completion of the specified task
@@ -256,7 +256,7 @@ extern ENOKI_THREAD_EXPORT void task_release(Task *task);
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_wait(Task *task) ENOKI_THREAD_THROW;
+extern DRJIT_THREAD_EXPORT void task_wait(Task *task) DRJIT_THREAD_THROW;
 
 /*
  * \brief Wait for the completion of the specified task and release its handle
@@ -273,7 +273,7 @@ extern ENOKI_THREAD_EXPORT void task_wait(Task *task) ENOKI_THREAD_THROW;
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task) ENOKI_THREAD_THROW;
+extern DRJIT_THREAD_EXPORT void task_wait_and_release(Task *task) DRJIT_THREAD_THROW;
 
 /**
  * \brief Return the time consumed by the task in milliseconds
@@ -281,7 +281,7 @@ extern ENOKI_THREAD_EXPORT void task_wait_and_release(Task *task) ENOKI_THREAD_T
  * To use this function, you must first enable time profiling via \ref
  * pool_set_profile() before launching tasks.
  */
-extern ENOKI_THREAD_EXPORT float task_time(Task *task) ENOKI_THREAD_THROW;
+extern DRJIT_THREAD_EXPORT float task_time(Task *task) DRJIT_THREAD_THROW;
 
 /*
  * \brief Increase the reference count of a task
@@ -295,17 +295,17 @@ extern ENOKI_THREAD_EXPORT float task_time(Task *task) ENOKI_THREAD_THROW;
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
  */
-extern ENOKI_THREAD_EXPORT void task_retain(Task *task);
+extern DRJIT_THREAD_EXPORT void task_retain(Task *task);
 
 /// Convenience wrapper around task_submit_dep(), but without dependencies
 static inline
 Task *task_submit(Pool *pool,
-                  uint32_t size ENOKI_THREAD_DEF(1),
-                  void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
-                  void *payload ENOKI_THREAD_DEF(0),
-                  uint32_t payload_size ENOKI_THREAD_DEF(0),
-                  void (*payload_deleter)(void *) ENOKI_THREAD_DEF(0),
-                  int always_async ENOKI_THREAD_DEF(0)) {
+                  uint32_t size DRJIT_THREAD_DEF(1),
+                  void (*func)(uint32_t, void *) DRJIT_THREAD_DEF(0),
+                  void *payload DRJIT_THREAD_DEF(0),
+                  uint32_t payload_size DRJIT_THREAD_DEF(0),
+                  void (*payload_deleter)(void *) DRJIT_THREAD_DEF(0),
+                  int always_async DRJIT_THREAD_DEF(0)) {
 
     return task_submit_dep(pool, 0, 0, size, func, payload, payload_size,
                            payload_deleter, always_async);
@@ -314,9 +314,9 @@ Task *task_submit(Pool *pool,
 /// Convenience wrapper around task_submit(), but fully synchronous
 static inline
 void task_submit_and_wait(Pool *pool,
-                          uint32_t size ENOKI_THREAD_DEF(1),
-                          void (*func)(uint32_t, void *) ENOKI_THREAD_DEF(0),
-                          void *payload ENOKI_THREAD_DEF(0)) {
+                          uint32_t size DRJIT_THREAD_DEF(1),
+                          void (*func)(uint32_t, void *) DRJIT_THREAD_DEF(0),
+                          void *payload DRJIT_THREAD_DEF(0)) {
 
     Task *task = task_submit(pool, size, func, payload, 0, 0, 0);
     task_wait_and_release(task);
@@ -327,7 +327,7 @@ void task_submit_and_wait(Pool *pool,
 
 #include <utility>
 
-namespace enoki {
+namespace drjit {
     template <typename Int> struct blocked_range {
     public:
         blocked_range(Int begin, Int end, Int block_size = 1)
