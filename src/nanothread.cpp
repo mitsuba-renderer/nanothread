@@ -13,7 +13,9 @@
 #include <memory>
 #include <type_traits>
 
-#if defined(_WIN32)
+#if defined(__linux__)
+#  include <unistd.h>
+#elif defined(_WIN32)
 #  include <windows.h>
 #  include <processthreadsapi.h>
 #endif
@@ -63,6 +65,63 @@ struct Worker {
 
 static Pool *pool_default_inst = nullptr;
 static std::mutex pool_default_lock;
+static uint32_t cached_core_count = 0;
+
+uint32_t core_count() {
+    // assumes atomic word size memory access
+    if (cached_core_count)
+        return cached_core_count;
+
+    // Determine the number of present cores
+    uint32_t ncores = std::thread::hardware_concurrency();
+    cached_core_count = ncores;
+
+#if defined(__linux__)
+    // Don't try to query CPU affinity if running inside Valgrind
+    if (getenv("VALGRIND_OPTS") == nullptr) {
+        /* Some of the cores may not be available to the user
+           (e.g. on certain cluster nodes) -- determine the number
+           of actual available cores here. */
+        uint32_t ncores_logical = ncores;
+        size_t size = 0;
+        cpu_set_t *cpuset = nullptr;
+        int retval = 0;
+
+        /* The kernel may expect a larger cpu_set_t than would
+           be warranted by the physical core count. Keep querying
+           with increasingly larger buffers if the
+           pthread_getaffinity_np operation fails */
+        for (uint32_t i = 0; i < 10; ++i) {
+            size = CPU_ALLOC_SIZE(ncores_logical);
+            cpuset = CPU_ALLOC(ncores_logical);
+            if (!cpuset) {
+                fprintf(stderr, "nanothread: core_count(): Could not allocate cpu_set_t.\n");
+                return ncores;
+            }
+            CPU_ZERO_S(size, cpuset);
+
+            int retval = pthread_getaffinity_np(pthread_self(), size, cpuset);
+            if (retval == 0)
+                break;
+            CPU_FREE(cpuset);
+            ncores_logical *= 2;
+        }
+
+        if (retval) {
+            fprintf(stderr, "nanothread: core_count(): Could not read thread affinity map.\n");
+            return ncores;
+        }
+
+        uint32_t ncores_avail = 0;
+        for (uint32_t i = 0; i < ncores_logical; ++i)
+            ncores_avail += CPU_ISSET_S(i, size, cpuset) ? 1 : 0;
+        ncores = ncores_avail;
+        CPU_FREE(cpuset);
+    }
+#endif
+    return ncores;
+}
+
 
 uint32_t pool_thread_id() {
     return thread_id_tls;
@@ -81,7 +140,7 @@ Pool *pool_create(uint32_t size, int ftz) {
     Pool *pool = new Pool();
     pool->ftz = ftz != 0;
     if (size == (uint32_t) -1)
-        size = std::thread::hardware_concurrency();
+        size = core_count();
     DJT_TRACE("pool_create(%p)", pool);
     pool_set_size(pool, size);
     return pool;
@@ -107,7 +166,7 @@ uint32_t pool_size(Pool *pool) {
     if (pool)
         return (uint32_t) pool->workers.size();
     else
-        return std::thread::hardware_concurrency();
+        return core_count();
 }
 
 void pool_set_size(Pool *pool, uint32_t size) {
