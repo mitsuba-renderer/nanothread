@@ -72,11 +72,12 @@ uint32_t core_count() {
     if (cached_core_count)
         return cached_core_count;
 
-#if defined(__linux__)
-    /* Determine the number of present cores */
-    uint32_t ncores = sysconf(_SC_NPROCESSORS_CONF);
+    // Determine the number of present cores
+    uint32_t ncores = std::thread::hardware_concurrency();
+    cached_core_count = ncores;
 
-    /* Don't try to query CPU affinity if running inside Valgrind */
+#if defined(__linux__)
+    // Don't try to query CPU affinity if running inside Valgrind
     if (getenv("VALGRIND_OPTS") == NULL) {
         /* Some of the cores may not be available to the user
            (e.g. on certain cluster nodes) -- determine the number
@@ -94,7 +95,8 @@ uint32_t core_count() {
             size = CPU_ALLOC_SIZE(ncores_logical);
             cpuset = CPU_ALLOC(ncores_logical);
             if (!cpuset) {
-                throw std::runtime_error("core_count(): could not allocate cpu_set_t");
+                fprintf(stderr, "nanothread: core_count(): Could not allocate cpu_set_t.\n");
+                return ncores;
             }
             CPU_ZERO_S(size, cpuset);
 
@@ -106,8 +108,8 @@ uint32_t core_count() {
         }
 
         if (retval) {
-            throw std::runtime_error("core_count(): pthread_getaffinity_np(): could "
-                                     "not read thread affinity map");
+            fprintf(stderr, "nanothread: core_count(): Could not read thread affinity map.\n");
+            return ncores;
         }
 
         uint32_t ncores_avail = 0;
@@ -116,11 +118,7 @@ uint32_t core_count() {
         ncores = ncores_avail;
         CPU_FREE(cpuset);
     }
-#else
-    ncores = std::thread::hardware_concurrency();
 #endif
-
-    cached_core_count = ncores;
     return ncores;
 }
 

@@ -70,7 +70,7 @@ pool_create(uint32_t size NANOTHREAD_DEF(NANOTHREAD_AUTO),
 extern NANOTHREAD_EXPORT void pool_destroy(Pool *pool NANOTHREAD_DEF(0));
 
 /// Returns the number of available CPU cores.
-extern NANOTHREAD_EXPORT uint32_t core_count() NANOTHREAD_THROW;
+extern NANOTHREAD_EXPORT uint32_t core_count();
 
 /**
  * \brief Return the number of threads that are part of the pool
