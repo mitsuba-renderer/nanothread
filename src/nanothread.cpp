@@ -78,13 +78,13 @@ uint32_t core_count() {
 
 #if defined(__linux__)
     // Don't try to query CPU affinity if running inside Valgrind
-    if (getenv("VALGRIND_OPTS") == NULL) {
+    if (getenv("VALGRIND_OPTS") == nullptr) {
         /* Some of the cores may not be available to the user
            (e.g. on certain cluster nodes) -- determine the number
            of actual available cores here. */
         uint32_t ncores_logical = ncores;
         size_t size = 0;
-        cpu_set_t *cpuset = NULL;
+        cpu_set_t *cpuset = nullptr;
         int retval = 0;
 
         /* The kernel may expect a larger cpu_set_t than would
