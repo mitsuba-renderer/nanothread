@@ -74,7 +74,6 @@ uint32_t core_count() {
 
     // Determine the number of present cores
     uint32_t ncores = std::thread::hardware_concurrency();
-    cached_core_count = ncores;
 
 #if defined(__linux__)
     // Don't try to query CPU affinity if running inside Valgrind
@@ -119,6 +118,7 @@ uint32_t core_count() {
         CPU_FREE(cpuset);
     }
 #endif
+    cached_core_count = ncores;
     return ncores;
 }
 
