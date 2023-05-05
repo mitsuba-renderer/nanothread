@@ -1,5 +1,6 @@
 #include <nanothread/nanothread.h>
 #include <cstdlib>
+#include <cstring>
 
 #if defined(_WIN32)
 #  include <windows.h>
