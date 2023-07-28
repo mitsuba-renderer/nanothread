@@ -246,7 +246,11 @@ private:
 
 extern "C" uint32_t pool_thread_id();
 
-extern int profile_tasks;
+#if defined(_MSC_VER)
+  extern __declspec(thread) int profile_tasks;
+#else
+  extern __thread int profile_tasks;
+#endif
 
 #define DJT_STR_2(x) #x
 #define DJT_STR(x)   DJT_STR_2(x)

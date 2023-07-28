@@ -198,7 +198,11 @@ void pool_set_size(Pool *pool, uint32_t size) {
     }
 }
 
-int profile_tasks = false;
+#if defined(_MSC_VER)
+  __declspec(thread) int profile_tasks = false;
+#else
+  __thread int profile_tasks = false;
+#endif
 
 int pool_profile() {
     return (int) profile_tasks;
