@@ -141,7 +141,7 @@ Pool *pool_create(uint32_t size, int ftz) {
     pool->ftz = ftz != 0;
     if (size == (uint32_t) -1)
         size = core_count();
-    DJT_TRACE("pool_create(%p)", pool);
+    NT_TRACE("pool_create(%p)", pool);
     pool_set_size(pool, size);
     return pool;
 }
@@ -176,11 +176,11 @@ void pool_set_size(Pool *pool, uint32_t size) {
 
         if (!pool) {
             pool = pool_default_inst = new Pool();
-            DJT_TRACE("pool_create(%p)", pool);
+            NT_TRACE("pool_create(%p)", pool);
         }
     }
 
-    DJT_TRACE("pool_set_size(%p, %u)", pool, size);
+    NT_TRACE("pool_set_size(%p, %u)", pool, size);
 
     int diff = (int) size - (int) pool->workers.size();
     if (diff > 0) {
@@ -229,7 +229,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
     // If this is a small work unit, execute it right away
     if (size == 1 && !has_parent && async == 0) {
-        DJT_TRACE("task_submit_dep(): task is small, executing right away");
+        NT_TRACE("task_submit_dep(): task is small, executing right away");
 
         if (!profile_tasks) {
             if (func)
@@ -314,7 +314,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
                custom deleter was provided. Make a temporary copy. */
             task->payload = malloc(payload_size);
             task->payload_deleter = free;
-            DJT_ASSERT(task->payload != nullptr);
+            NT_ASSERT(task->payload != nullptr);
             memcpy(task->payload, payload, payload_size);
         }
     } else {
@@ -345,21 +345,21 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
     if (task) {
         if (task->func) {
             if (task->exception_used.load()) {
-                DJT_TRACE(
+                NT_TRACE(
                     "not running callback (task=%p, index=%u) because another "
                     "work unit of this task generated an exception",
                     task, index);
             } else {
                 try {
-                    DJT_TRACE("running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
+                    NT_TRACE("running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
                     task->func(index, task->payload);
                 } catch (...) {
                     bool value = false;
                     if (task->exception_used.compare_exchange_strong(value, true)) {
-                        DJT_TRACE("exception caught, storing..");
+                        NT_TRACE("exception caught, storing..");
                         task->exception = std::current_exception();
                     } else {
-                        DJT_TRACE("exception caught, ignoring (an exception was already stored)");
+                        NT_TRACE("exception caught, ignoring (an exception was already stored)");
                     }
                 }
             }
@@ -402,7 +402,7 @@ void task_wait(Task *task) {
             return (uint32_t)(((Task *) ptr)->refcount.load()) == 0;
         };
 
-        DJT_TRACE("task_wait(%p)", task);
+        NT_TRACE("task_wait(%p)", task);
 
         // Help executing work units in the meantime
         while (!stopping_criterion(task))
@@ -468,15 +468,15 @@ Worker::~Worker() { thread.join(); }
 void Worker::run() {
     thread_id_tls = id;
 
-    DJT_TRACE("worker started");
+    NT_TRACE("worker started");
 
     #if defined(_WIN32)
         wchar_t buf[24];
-        _snwprintf(buf, sizeof(buf) / sizeof(wchar_t), L"DrJit worker %u", id);
+        _snwprintf(buf, sizeof(buf) / sizeof(wchar_t), L"nanothread worker %u", id);
         SetThreadDescription(GetCurrentThread(), buf);
     #else
         char buf[24];
-        snprintf(buf, sizeof(buf), "DrJit worker %u", id);
+        snprintf(buf, sizeof(buf), "nanothread worker %u", id);
         #if defined(__APPLE__)
             pthread_setname_np(buf);
         #else
@@ -489,7 +489,7 @@ void Worker::run() {
         pool_execute_task(
             pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop);
 
-    DJT_TRACE("worker stopped");
+    NT_TRACE("worker stopped");
 
     thread_id_tls = 0;
 }

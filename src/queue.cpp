@@ -90,7 +90,7 @@ TaskQueue::~TaskQueue() {
 
         for (Task *child : task->children) {
             uint32_t wait = child->wait_parents.fetch_sub(1);
-            DJT_ASSERT(wait != 0);
+            NT_ASSERT(wait != 0);
             if (wait == 1)
                 push(child);
         }
@@ -105,7 +105,7 @@ TaskQueue::~TaskQueue() {
     ptr = recycle;
     while (ptr.task) {
         Task *task = ptr.task;
-        DJT_ASSERT(task->payload == nullptr && task->children.empty());
+        NT_ASSERT(task->payload == nullptr && task->children.empty());
         deleted++;
         ptr = task->next;
         delete task;
@@ -157,7 +157,7 @@ Task *TaskQueue::alloc(uint32_t size) {
     memset(&task->time_start, 0, sizeof(task->time_start));
     memset(&task->time_end, 0, sizeof(task->time_end));
 
-    DJT_TRACE("created new task %p with size=%u", task, size);
+    NT_TRACE("created new task %p with size=%u", task, size);
 
     return task;
 }
@@ -167,16 +167,16 @@ void TaskQueue::release(Task *task, bool high) {
     uint32_t ref_lo = (uint32_t) result,
              ref_hi = (uint32_t) (result >> 32);
 
-    DJT_ASSERT((!high || ref_hi > 0) && (high || ref_lo > 0));
+    NT_ASSERT((!high || ref_hi > 0) && (high || ref_lo > 0));
     ref_hi -= (uint32_t) high;
     ref_lo -= (uint32_t) !high;
 
-    DJT_TRACE("dec_ref(%p, (%i, %i)) -> ref = (%u, %u)", task, (int) high,
-              (int) !high, ref_hi, ref_lo);
+    NT_TRACE("dec_ref(%p, (%i, %i)) -> ref = (%u, %u)", task, (int) high,
+             (int) !high, ref_hi, ref_lo);
 
     // If all work has completed: schedule children and free payload
     if (!high && ref_lo == 0) {
-        DJT_TRACE("all work associated with task %p has completed.", task);
+        NT_TRACE("all work associated with task %p has completed.", task);
 
         if (profile_tasks) {
             #if defined(_WIN32)
@@ -189,26 +189,26 @@ void TaskQueue::release(Task *task, bool high) {
         for (Task *child : task->children) {
             uint32_t wait = child->wait_parents.fetch_sub(1);
 
-            DJT_TRACE("notifying child %p of task %p: wait=%u", child, task,
-                      wait - 1);
+            NT_TRACE("notifying child %p of task %p: wait=%u", child, task,
+                     wait - 1);
 
-            DJT_ASSERT(wait > 0);
+            NT_ASSERT(wait > 0);
 
             if (task->exception_used.load()) {
                 bool expected = false;
                 if (child->exception_used.compare_exchange_strong(expected, true)) {
-                    DJT_TRACE("propagating exception to child %p of task %p.",
-                              child, task);
+                    NT_TRACE("propagating exception to child %p of task %p.",
+                             child, task);
                     child->exception = task->exception;
                 } else {
-                    DJT_TRACE("not propagating exception to child %p of "
-                              "task %p (already stored).", child, task);
+                    NT_TRACE("not propagating exception to child %p of "
+                             "task %p (already stored).", child, task);
                 }
             }
 
             if (wait == 1) {
-                DJT_TRACE("Child %p of task %p is ready for execution.", child,
-                          task);
+                NT_TRACE("Child %p of task %p is ready for execution.", child,
+                         task);
                 push(child);
             }
         }
@@ -223,8 +223,8 @@ void TaskQueue::release(Task *task, bool high) {
     } else if (high && ref_hi == 0) {
         // Nobody holds any references at this point, recycle task
 
-        DJT_ASSERT(ref_lo == 0);
-        DJT_TRACE("all usage of task %p is done, recycling.", task);
+        NT_ASSERT(ref_lo == 0);
+        NT_TRACE("all usage of task %p is done, recycling.", task);
 
         Task::Ptr node = ldar(recycle);
         while (true) {
@@ -253,12 +253,12 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
             if (parent->exception_used.load()) {
                 bool expected = false;
                 if (child->exception_used.compare_exchange_strong(expected, true)) {
-                    DJT_TRACE("propagating exception to child %p of task %p.",
-                              child, parent);
+                    NT_TRACE("propagating exception to child %p of task %p.",
+                             child, parent);
                     child->exception = parent->exception;
                 } else {
-                    DJT_TRACE("not propagating exception to child %p of "
-                              "task %p (already stored).", child, parent);
+                    NT_TRACE("not propagating exception to child %p of "
+                             "task %p (already stored).", child, parent);
                 }
             }
             return;
@@ -277,8 +277,8 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
     uint32_t wait = ++child->wait_parents;
     (void) wait;
 
-    DJT_TRACE("registering dependency: parent=%p, child=%p, child->wait=%u",
-              parent, child, wait);
+    NT_TRACE("registering dependency: parent=%p, child=%p, child->wait=%u",
+             parent, child, wait);
 
     /* Undo the parent->refcount change. If the task completed in the
        meantime, child->wait_parents will also be decremented by
@@ -287,14 +287,14 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
 }
 
 void TaskQueue::retain(Task *task) {
-    DJT_TRACE("retain(task=%p)", task);
+    NT_TRACE("retain(task=%p)", task);
     task->refcount.fetch_add(high_bit);
 }
 
 void TaskQueue::push(Task *task) {
     uint32_t size = task->size;
 
-    DJT_TRACE("push(task=%p, size=%u)", task, size);
+    NT_TRACE("push(task=%p, size=%u)", task, size);
 
     while (true) {
         // Lead tail and tail->next, and double-check, in this order
@@ -351,7 +351,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
                         break;
                     }
                 } else {
-                    DJT_ASSERT(remain == 1);
+                    NT_ASSERT(remain == 1);
                     // Head node is removed from the queue, reduce refcount
                     if (cas(head, head_c, head_c.update_task(next_c.task))) {
                         task = next_c.task;
@@ -378,7 +378,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
     }
 
     if (task) {
-        DJT_TRACE("pop(task=%p, index=%u)", task, index);
+        NT_TRACE("pop(task=%p, index=%u)", task, index);
 
         if (index == 0 && profile_tasks) {
             #if defined(_WIN32)
@@ -395,12 +395,12 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
 void TaskQueue::wakeup() {
     std::unique_lock<std::mutex> guard(sleep_mutex);
     uint64_t value = sleep_state.load();
-    DJT_TRACE("wakeup(): sleep_state := (%u, 0)", (uint32_t) (sleep_state >> 32) + 1);
+    NT_TRACE("wakeup(): sleep_state := (%u, 0)", (uint32_t) (sleep_state >> 32) + 1);
     sleep_state = (value + high_bit) & high_mask;
     sleep_cv.notify_all();
 }
 
-#if defined(DJT_DEBUG)
+#if defined(NT_DEBUG)
 double time_milliseconds() {
     #if defined(_WIN32)
         LARGE_INTEGER ticks, ticks_per_sec;
@@ -419,7 +419,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(v
     std::pair<Task *, uint32_t> result(nullptr, 0);
     uint32_t attempts = 0;
 
-#if defined(DJT_DEBUG)
+#if defined(NT_DEBUG)
     double start = time_milliseconds();
 #endif
 
@@ -435,10 +435,10 @@ std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(v
             std::unique_lock<std::mutex> guard(sleep_mutex);
 
             uint64_t value = ++sleep_state, phase = value & high_mask;
-            DJT_TRACE("pop_or_sleep(): falling asleep after %.2f milliseconds, "
-                      "sleep_state := (%u, %u)!",
-                      time_milliseconds() - start, (uint32_t)(value >> 32),
-                      (uint32_t) value);
+            NT_TRACE("pop_or_sleep(): falling asleep after %.2f milliseconds, "
+                     "sleep_state := (%u, %u)!",
+                     time_milliseconds() - start, (uint32_t)(value >> 32),
+                     (uint32_t) value);
 
             // Try once more to fetch a job
             result = pop();
@@ -447,7 +447,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(v
                became active while this thread was about to go to sleep. */
             if (result.first || stopping_criterion(payload)) {
                 // Reduce sleep_state if we're still in the same phase.
-                DJT_TRACE("sleep aborted.");
+                NT_TRACE("sleep aborted.");
                 while (true) {
                     if (sleep_state.compare_exchange_strong(value, value - 1))
                         break;
@@ -477,8 +477,8 @@ std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(v
                 sleep_cv.wait(guard);
 
             value = sleep_state.load();
-            DJT_TRACE("pop_or_sleep(): woke up -- sleep_state=(%u, %u)",
-                      (uint32_t)(value >> 32), (uint32_t) value);
+            NT_TRACE("pop_or_sleep(): woke up -- sleep_state=(%u, %u)",
+                     (uint32_t)(value >> 32), (uint32_t) value);
         }
     }
 

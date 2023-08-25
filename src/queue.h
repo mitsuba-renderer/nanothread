@@ -248,21 +248,21 @@ extern "C" uint32_t pool_thread_id();
 
 extern int profile_tasks;
 
-#define DJT_STR_2(x) #x
-#define DJT_STR(x)   DJT_STR_2(x)
+#define NT_STR_2(x) #x
+#define NT_STR(x)   NT_STR_2(x)
 
-// #define DJT_DEBUG
-#if defined(DJT_DEBUG)
-#  define DJT_TRACE(fmt, ...)                                                  \
+// #define NT_DEBUG
+#if defined(NT_DEBUG)
+#  define NT_TRACE(fmt, ...)                                                  \
       fprintf(stderr, "%03u: " fmt "\n", pool_thread_id(), ##__VA_ARGS__)
 #else
-#  define DJT_TRACE(fmt, ...) do { } while (0)
+#  define NT_TRACE(fmt, ...) do { } while (0)
 #endif
 
-#define DJT_ASSERT(x)                                                          \
+#define NT_ASSERT(x)                                                           \
     if (!(x)) {                                                                \
         fprintf(stderr, "Assertion failed in " __FILE__                        \
-                        ":" DJT_STR(__LINE__) ": " #x "\n");                   \
+                        ":" NT_STR(__LINE__) ": " #x "\n");                    \
         abort();                                                               \
     }
 
