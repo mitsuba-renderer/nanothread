@@ -113,6 +113,20 @@ extern NANOTHREAD_EXPORT int pool_profile();
  */
 extern NANOTHREAD_EXPORT uint32_t pool_thread_id();
 
+/** \brief Process work available within the pool until a stopping criterion is
+ * satisified.
+ *
+ * This function repeatedly fetches work from ``pool`` until the stopping
+ * criterion ``stopping_criterion(payload)`` evaluates to ``true``, at which
+ * point the function returns.
+ *
+ * It provides a way for an ordinary thread to temporarily join the thread
+ * pool. A function being called by a worker thread that needs to wait for an
+ * event to take place can also call this function to avoid starvation issues.
+ */
+extern NANOTHREAD_EXPORT void
+pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *payload);
+
 /*
  * \brief Submit a new task to a thread pool
  *

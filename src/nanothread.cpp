@@ -369,6 +369,15 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
     }
 }
 
+void pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *payload) {
+    if (!pool)
+        pool = pool_default_inst;
+    if (!pool)
+        return;
+    while (!stopping_criterion(payload))
+        pool_execute_task(pool, stopping_criterion, payload);
+}
+
 #if defined(__SSE2__)
 struct FTZGuard {
     FTZGuard(bool enable) : enable(enable) {
