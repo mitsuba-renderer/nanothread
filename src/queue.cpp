@@ -415,9 +415,11 @@ double time_milliseconds() {
 }
 #endif
 
-std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload) {
-    std::pair<Task *, uint32_t> result(nullptr, 0);
-    uint32_t attempts = 0;
+std::pair<Task *, uint32_t>
+TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
+                        bool may_sleep) {
+        std::pair<Task *, uint32_t> result(nullptr, 0);
+        uint32_t attempts = 0;
 
 #if defined(NT_DEBUG)
     double start = time_milliseconds();
@@ -431,7 +433,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop_or_sleep(bool (*stopping_criterion)(v
 
         attempts++;
 
-        if (attempts >= NANOTHREAD_MAX_ATTEMPTS) {
+        if (may_sleep && attempts >= NANOTHREAD_MAX_ATTEMPTS) {
             std::unique_lock<std::mutex> guard(sleep_mutex);
 
             uint64_t value = ++sleep_state, phase = value & high_mask;

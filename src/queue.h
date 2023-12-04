@@ -212,13 +212,15 @@ public:
      * \breif Fetch a task from the queue, or sleep
      *
      * This function repeatedly tries to fetch work from the queue and sleeps
-     * if no work is available for an extended amount of time (~50 ms).
+     * if no work is available for an extended amount of time (~50 ms) and
+     * the \c may_sleep parameter is set to \c true.
      *
      * The function stops trying to acquire work and returns <tt>(nullptr,
      * 0)</tt> when the supplied function <tt>stopping_criterion(payload)</tt>
      * evaluates to true.
      */
-    std::pair<Task *, uint32_t> pop_or_sleep(bool (*stopping_criterion)(void *), void *payload);
+    std::pair<Task *, uint32_t> pop_or_sleep(bool (*stopping_criterion)(void *),
+                                             void *payload, bool may_sleep);
 
     /// Wake sleeping threads
     void wakeup();

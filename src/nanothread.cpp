@@ -337,10 +337,11 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 }
 
 static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
-                              void *payload) {
+                              void *payload, bool may_sleep) {
     Task *task;
     uint32_t index;
-    std::tie(task, index) = pool->queue.pop_or_sleep(stopping_criterion, payload);
+    std::tie(task, index) =
+        pool->queue.pop_or_sleep(stopping_criterion, payload, may_sleep);
 
     if (task) {
         if (task->func) {
@@ -375,7 +376,7 @@ void pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *paylo
     if (!pool)
         return;
     while (!stopping_criterion(payload))
-        pool_execute_task(pool, stopping_criterion, payload);
+        pool_execute_task(pool, stopping_criterion, payload, false);
 }
 
 #if defined(__SSE2__)
@@ -415,7 +416,7 @@ void task_wait(Task *task) {
 
         // Help executing work units in the meantime
         while (!stopping_criterion(task))
-            pool_execute_task(pool, stopping_criterion, task);
+            pool_execute_task(pool, stopping_criterion, task, true);
 
         task->wait_count--;
 
@@ -496,7 +497,8 @@ void Worker::run() {
     FTZGuard ftz_guard(ftz);
     while (!stop)
         pool_execute_task(
-            pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop);
+            pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop,
+            true);
 
     NT_TRACE("worker stopped");
 
