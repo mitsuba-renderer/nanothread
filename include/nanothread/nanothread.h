@@ -13,6 +13,10 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#if !defined(__cplusplus)
+    #include <stdbool.h>
+#endif
+
 #if defined(_MSC_VER)
 #  if defined(NANOTHREAD_BUILD)
 #    define NANOTHREAD_EXPORT    __declspec(dllexport)
