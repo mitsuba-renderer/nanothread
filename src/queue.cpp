@@ -181,6 +181,8 @@ void TaskQueue::release(Task *task, bool high) {
         if (profile_tasks) {
             #if defined(_WIN32)
                 QueryPerformanceCounter(&task->time_end);
+            #elif defined(__APPLE__)
+                task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
             #else
                 clock_gettime(CLOCK_MONOTONIC, &task->time_end);
             #endif
@@ -383,6 +385,8 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
         if (index == 0 && profile_tasks) {
             #if defined(_WIN32)
                 QueryPerformanceCounter(&task->time_start);
+            #elif defined(__APPLE__)
+                task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
             #else
                 clock_gettime(CLOCK_MONOTONIC, &task->time_start);
             #endif
@@ -407,6 +411,8 @@ double time_milliseconds() {
         QueryPerformanceCounter(&ticks);
         QueryPerformanceFrequency(&ticks_per_sec);
         return (double) (ticks.QuadPart * 1000) / (double) ticks_per_sec.QuadPart;
+    #elif defined(__APPLE__)
+        return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000.0;
     #else
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);

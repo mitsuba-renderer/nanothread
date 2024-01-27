@@ -298,7 +298,7 @@ extern NANOTHREAD_EXPORT void task_wait_and_release(Task *task) NANOTHREAD_THROW
  * To use this function, you must first enable time profiling via \ref
  * pool_set_profile() before launching tasks.
  */
-extern NANOTHREAD_EXPORT float task_time(Task *task) NANOTHREAD_THROW;
+extern NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW;
 
 /*
  * \brief Increase the reference count of a task

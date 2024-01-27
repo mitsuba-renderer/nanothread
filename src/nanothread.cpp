@@ -248,6 +248,8 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
             #if defined(_WIN32)
                 QueryPerformanceCounter(&task->time_start);
+            #elif defined(__APPLE__)
+                task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
             #else
                 clock_gettime(CLOCK_MONOTONIC, &task->time_start);
             #endif
@@ -257,6 +259,8 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
             #if defined(_WIN32)
                 QueryPerformanceCounter(&task->time_end);
+            #elif defined(__APPLE__)
+                task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
             #else
                 clock_gettime(CLOCK_MONOTONIC, &task->time_end);
             #endif
@@ -449,18 +453,20 @@ void task_wait_and_release(Task *task) NANOTHREAD_THROW {
 static float timer_frequency_scale = 0.f;
 #endif
 
-NANOTHREAD_EXPORT float task_time(Task *task) NANOTHREAD_THROW {
+NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW {
     if (!task)
         return 0;
 
-#if !defined(_WIN32)
-    return (task->time_end.tv_sec - task->time_start.tv_sec) * 1e3f +
-           (task->time_end.tv_nsec - task->time_start.tv_nsec) * 1e-6f;
+#if defined(__APPLE__)
+    return (task->time_end - task->time_start) * 1e-6;
+#elif !defined(_WIN32)
+    return (task->time_end.tv_sec - task->time_start.tv_sec) * 1e3 +
+           (task->time_end.tv_nsec - task->time_start.tv_nsec) * 1e-6;
 #else
     if (timer_frequency_scale == 0.f) {
         LARGE_INTEGER timer_frequency;
         QueryPerformanceFrequency(&timer_frequency);
-        timer_frequency_scale = 1e3f / timer_frequency.QuadPart;
+        timer_frequency_scale = 1e3 / timer_frequency.QuadPart;
     }
 
     return timer_frequency_scale *

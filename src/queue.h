@@ -117,7 +117,9 @@ struct Task {
     /// Pointer to an exception in case the task failed
     std::exception_ptr exception;
 
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+    uint64_t time_start, time_end;
+#elif !defined(_WIN32)
     timespec time_start, time_end;
 #else
     LARGE_INTEGER time_start, time_end;
