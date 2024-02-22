@@ -45,7 +45,7 @@ static bool cas(Task::Ptr &ptr, Task::Ptr &expected, Task::Ptr desired) {
     #endif
 #else
     return __atomic_compare_exchange(&ptr, &expected, &desired, true,
-                                     __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+                                     __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
 #endif
 }
 
