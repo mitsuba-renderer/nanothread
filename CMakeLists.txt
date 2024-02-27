@@ -71,5 +71,36 @@ target_compile_definitions(nanothread PRIVATE -DNANOTHREAD_BUILD=1)
 set_target_properties(nanothread PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 
 if (NANOTHREAD_ENABLE_TESTS)
-   add_subdirectory(tests)
+  include(CTest)
+  add_subdirectory(tests)
 endif()
+
+configure_file(nanothreadConfig.cmake "${CMAKE_CURRENT_BINARY_DIR}/nanothread/nanothreadConfig.cmake" COPYONLY)
+install(
+  FILES
+    nanothreadConfig.cmake
+  DESTINATION
+    ${CMAKE_INSTALL_LIBDIR}/cmake/nanothread
+)
+install(
+  TARGETS
+    nanothread
+  EXPORT
+    nanothreadTargets
+  INCLUDES DESTINATION
+    ${CMAKE_INSTALL_INCLUDEDIR}
+)
+install(
+  DIRECTORY
+    include/nanothread
+  DESTINATION
+    ${CMAKE_INSTALL_INCLUDEDIR}
+)
+install(
+  EXPORT
+    nanothreadTargets
+  FILE
+    nanothreadTargets.cmake
+  DESTINATION
+    ${CMAKE_INSTALL_LIBDIR}/cmake/nanothread
+)
