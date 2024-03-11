@@ -450,7 +450,7 @@ void task_wait_and_release(Task *task) NANOTHREAD_THROW {
 }
 
 #if defined(_WIN32)
-static float timer_frequency_scale = 0.f;
+static double timer_frequency_scale = 0.0;
 #endif
 
 NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW {
@@ -463,7 +463,7 @@ NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW {
     return (task->time_end.tv_sec - task->time_start.tv_sec) * 1e3 +
            (task->time_end.tv_nsec - task->time_start.tv_nsec) * 1e-6;
 #else
-    if (timer_frequency_scale == 0.f) {
+    if (timer_frequency_scale == 0.0) {
         LARGE_INTEGER timer_frequency;
         QueryPerformanceFrequency(&timer_frequency);
         timer_frequency_scale = 1e3 / timer_frequency.QuadPart;
