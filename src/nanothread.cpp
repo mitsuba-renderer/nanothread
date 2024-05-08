@@ -246,24 +246,28 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
             Task *task = pool->queue.alloc(size);
 
-            #if defined(_WIN32)
-                QueryPerformanceCounter(&task->time_start);
-            #elif defined(__APPLE__)
-                task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-            #else
-                clock_gettime(CLOCK_MONOTONIC, &task->time_start);
-            #endif
+            if (profile_tasks) {
+                #if defined(_WIN32)
+                    QueryPerformanceCounter(&task->time_start);
+                #elif defined(__APPLE__)
+                    task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+                #else
+                    clock_gettime(CLOCK_MONOTONIC, &task->time_start);
+                #endif
+            }
 
             if (func)
                 func(0, payload);
 
-            #if defined(_WIN32)
-                QueryPerformanceCounter(&task->time_end);
-            #elif defined(__APPLE__)
-                task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-            #else
-                clock_gettime(CLOCK_MONOTONIC, &task->time_end);
-            #endif
+            if (profile_tasks) {
+                #if defined(_WIN32)
+                    QueryPerformanceCounter(&task->time_end);
+                #elif defined(__APPLE__)
+                    task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+                #else
+                    clock_gettime(CLOCK_MONOTONIC, &task->time_end);
+                #endif
+            }
 
             if (payload_deleter)
                 payload_deleter(payload);
