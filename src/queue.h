@@ -11,13 +11,18 @@
 
 #include <atomic>
 #include <vector>
-#include <mutex>
 #include <condition_variable>
 #include <cstring>
 
 #if defined(_WIN32)
 #  include <windows.h>
+#  include <shared_mutex>
+using Lock = std::shared_mutex; // Prefer (more efficient) shared_mutex on Windows
+#else
+#  include <mutex>
+using Lock = std::mutex;
 #endif
+
 
 struct Pool;
 
@@ -241,7 +246,7 @@ private:
     std::atomic<uint64_t> sleep_state;
 
     /// Mutex protecting the fields below
-    std::mutex sleep_mutex;
+    Lock sleep_mutex;
 
     /// Condition variable used to manage workers that are asleep
     std::condition_variable sleep_cv;

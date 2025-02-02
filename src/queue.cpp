@@ -397,7 +397,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
 }
 
 void TaskQueue::wakeup() {
-    std::unique_lock<std::mutex> guard(sleep_mutex);
+    std::unique_lock<Lock> guard(sleep_mutex);
     uint64_t value = sleep_state.load();
     NT_TRACE("wakeup(): sleep_state := (%u, 0)", (uint32_t) (sleep_state >> 32) + 1);
     sleep_state = (value + high_bit) & high_mask;
@@ -440,7 +440,7 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
         attempts++;
 
         if (may_sleep && attempts >= NANOTHREAD_MAX_ATTEMPTS) {
-            std::unique_lock<std::mutex> guard(sleep_mutex);
+            std::unique_lock<Lock> guard(sleep_mutex);
 
             uint64_t value = ++sleep_state, phase = value & high_mask;
             NT_TRACE("pop_or_sleep(): falling asleep after %.2f milliseconds, "

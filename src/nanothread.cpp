@@ -64,7 +64,7 @@ struct Worker {
 
 
 static Pool *pool_default_inst = nullptr;
-static std::mutex pool_default_lock;
+static Lock pool_default_lock;
 static uint32_t cached_core_count = 0;
 
 uint32_t core_count() {
@@ -128,7 +128,7 @@ uint32_t pool_thread_id() {
 }
 
 Pool *pool_default() {
-    std::unique_lock<std::mutex> guard(pool_default_lock);
+    std::unique_lock<Lock> guard(pool_default_lock);
 
     if (!pool_default_inst)
         pool_default_inst = pool_create();
@@ -159,7 +159,7 @@ void pool_destroy(Pool *pool) {
 
 uint32_t pool_size(Pool *pool) {
     if (!pool) {
-        std::unique_lock<std::mutex> guard(pool_default_lock);
+        std::unique_lock<Lock> guard(pool_default_lock);
         pool = pool_default_inst;
     }
 
@@ -171,7 +171,7 @@ uint32_t pool_size(Pool *pool) {
 
 void pool_set_size(Pool *pool, uint32_t size) {
     if (!pool) {
-        std::unique_lock<std::mutex> guard(pool_default_lock);
+        std::unique_lock<Lock> guard(pool_default_lock);
         pool = pool_default_inst;
 
         if (!pool) {
