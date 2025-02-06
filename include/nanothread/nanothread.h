@@ -17,14 +17,18 @@
     #include <stdbool.h>
 #endif
 
-#if defined(_MSC_VER)
-#  if defined(NANOTHREAD_BUILD)
-#    define NANOTHREAD_EXPORT    __declspec(dllexport)
-#  else
-#    define NANOTHREAD_EXPORT    __declspec(dllimport)
-#  endif
+#if defined(NANOTHREAD_STATIC)
+#  define NANOTHREAD_EXPORT
 #else
-#  define NANOTHREAD_EXPORT      __attribute__ ((visibility("default")))
+#  if defined(_MSC_VER)
+#    if defined(NANOTHREAD_BUILD)
+#      define NANOTHREAD_EXPORT    __declspec(dllexport)
+#    else
+#      define NANOTHREAD_EXPORT    __declspec(dllimport)
+#    endif
+#  else
+#    define NANOTHREAD_EXPORT      __attribute__ ((visibility("default")))
+#  endif
 #endif
 
 #if defined(__cplusplus)

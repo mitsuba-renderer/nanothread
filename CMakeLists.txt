@@ -14,6 +14,7 @@ project(nanothread
 #  Optional features available to users
 # ----------------------------------------------------------
 
+option(NANOTHREAD_STATIC "Build as static library?" OFF)
 option(NANOTHREAD_ENABLE_TESTS "Build test suite?" OFF)
 
 # ----------------------------------------------------------
@@ -36,8 +37,14 @@ include(ext/cmake-defaults/CMakeLists.txt)
 #  Compile the nanothread library
 # ----------------------------------------------------------
 
-add_library(
-  nanothread SHARED
+if(NANOTHREAD_STATIC)
+  add_library(nanothread STATIC)
+  target_compile_definitions(nanothread PUBLIC -DNANOTHREAD_STATIC)
+else()
+  add_library(nanothread SHARED)
+endif()
+
+target_sources(nanothread PRIVATE
   include/nanothread/nanothread.h
   src/queue.cpp src/queue.h
   src/nanothread.cpp

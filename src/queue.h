@@ -13,6 +13,7 @@
 #include <vector>
 #include <condition_variable>
 #include <cstring>
+#include <cstdlib>
 
 #if defined(_WIN32)
 #  include <windows.h>
