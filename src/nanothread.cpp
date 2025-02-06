@@ -9,8 +9,9 @@
 
 #include <nanothread/nanothread.h>
 #include "queue.h"
-#include <thread>
+#include <cstdlib>
 #include <memory>
+#include <thread>
 #include <type_traits>
 
 #if defined(__linux__)
@@ -514,4 +515,3 @@ void Worker::run() {
 
     thread_id_tls = 0;
 }
-

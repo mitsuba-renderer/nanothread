@@ -9,6 +9,7 @@
 
 #include "queue.h"
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 
 #if defined(_WIN32)
@@ -492,4 +493,3 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
 
     return result;
 }
-
