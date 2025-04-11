@@ -26,7 +26,7 @@
 #define NANOTHREAD_MAX_ATTEMPTS 500000
 
 /// Reduce power usage in busy-wait CAS loops
-static void pause() {
+static void cas_pause() {
 #if defined(_M_X64) || defined(__SSE2__)
     _mm_pause();
 #endif
@@ -137,7 +137,7 @@ Task *TaskQueue::alloc(uint32_t size) {
         if (cas(recycle, node, node.update_task(next.task)))
             break;
 
-        pause();
+        cas_pause();
     }
 
     Task *task;
@@ -236,7 +236,7 @@ void TaskQueue::release(Task *task, bool high) {
             if (cas(recycle, node, node.update_task(task)))
                 break;
 
-            pause();
+            cas_pause();
         }
     }
 }
@@ -272,7 +272,7 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
                                                    std::memory_order_relaxed))
             break;
 
-        pause();
+        cas_pause();
     }
 
     // Otherwise, register the child task with the parent
@@ -321,7 +321,7 @@ void TaskQueue::push(Task *task) {
             }
         }
 
-        pause();
+        cas_pause();
     }
 
     // Wake sleeping threads, if any
@@ -368,7 +368,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
                 if (!next_c.task) {
                     task = nullptr;
                     index = 0;
-                    pause();
+                    cas_pause();
                     break;
                 } else {
                     // Advance the tail, it's falling behind
@@ -377,7 +377,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
             }
         }
 
-        pause();
+        cas_pause();
     }
 
     if (task) {
@@ -462,7 +462,7 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
                         break;
                     if ((value & high_mask) != phase)
                         break;
-                    pause();
+                    cas_pause();
                 }
                 break;
             }

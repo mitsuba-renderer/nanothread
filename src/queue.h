@@ -12,6 +12,8 @@
 #include <atomic>
 #include <vector>
 #include <condition_variable>
+#include <type_traits>
+#include <exception>
 #include <cstring>
 #include <cstdlib>
 

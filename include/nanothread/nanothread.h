@@ -13,8 +13,10 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#if !defined(__cplusplus)
-    #include <stdbool.h>
+#if defined(__cplusplus)
+#  include <type_traits>
+#else
+#  include <stdbool.h>
 #endif
 
 #if defined(NANOTHREAD_STATIC)
