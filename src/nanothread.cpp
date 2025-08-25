@@ -492,12 +492,12 @@ void Worker::run() {
     NT_TRACE("worker started");
 
     #if defined(_WIN32)
-        wchar_t buf[24];
-        _snwprintf(buf, sizeof(buf) / sizeof(wchar_t), L"nanothread worker %u", id);
+        wchar_t buf[16];
+        _snwprintf(buf, sizeof(buf) / sizeof(wchar_t), L"nt [%u]", id);
         SetThreadDescription(GetCurrentThread(), buf);
     #else
-        char buf[24];
-        snprintf(buf, sizeof(buf), "nanothread worker %u", id);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "nt [%u]", id);
         #if defined(__APPLE__)
             pthread_setname_np(buf);
         #else
