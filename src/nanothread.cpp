@@ -213,7 +213,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
                       uint32_t parent_count, uint32_t size,
                       void (*func)(uint32_t, void *), void *payload,
                       uint32_t payload_size, void (*payload_deleter)(void *),
-                      int async) {
+                      int async, int profile) {
 
     if (size == 0) {
         // There is no work, so the payload is irrelevant
@@ -222,6 +222,9 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
         // The queue requires task size >= 1
         size = 1;
     }
+
+    // Enable profiling if requested globally or via the 'profile' argument
+    bool profile_task = profile_tasks || profile != 0;
 
     // Does the task have parent tasks
     bool has_parent = false;
@@ -232,7 +235,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
     if (size == 1 && !has_parent && async == 0) {
         NT_TRACE("task_submit_dep(): task is small, executing right away");
 
-        if (!profile_tasks) {
+        if (!profile_task) {
             if (func)
                 func(0, payload);
 
@@ -247,7 +250,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
             Task *task = pool->queue.alloc(size);
 
-            if (profile_tasks) {
+            if (profile_task) {
                 #if defined(_WIN32)
                     QueryPerformanceCounter(&task->time_start);
                 #elif defined(__APPLE__)
@@ -260,7 +263,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
             if (func)
                 func(0, payload);
 
-            if (profile_tasks) {
+            if (profile_task) {
                 #if defined(_WIN32)
                     QueryPerformanceCounter(&task->time_end);
                 #elif defined(__APPLE__)
@@ -309,6 +312,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
     task->size = size;
     task->func = func;
     task->pool = pool;
+    task->profile = profile_task;
 
     if (payload) {
         if (payload_deleter || payload_size == 0) {
@@ -454,6 +458,14 @@ void task_wait_and_release(Task *task) NANOTHREAD_THROW {
     task_release(task);
 }
 
+bool task_query(Task *task) {
+    if (!task)
+        return true;
+
+    uint32_t remaining = (uint32_t) task->refcount.load();
+    return remaining == 0;
+}
+
 #if defined(_WIN32)
 static double timer_frequency_scale = 0.0;
 #endif
@@ -476,6 +488,27 @@ NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW {
 
     return timer_frequency_scale *
            (task->time_end.QuadPart - task->time_start.QuadPart);
+#endif
+}
+
+NANOTHREAD_EXPORT double task_time_rel(Task *task_1, Task *task_2) NANOTHREAD_THROW {
+    if (!task_1 || !task_2)
+        return 0;
+
+#if defined(__APPLE__)
+    return (task_2->time_start - task_1->time_start) * 1e-6;
+#elif !defined(_WIN32)
+    return (task_2->time_start.tv_sec - task_1->time_start.tv_sec) * 1e3 +
+           (task_2->time_start.tv_nsec - task_1->time_start.tv_nsec) * 1e-6;
+#else
+    if (timer_frequency_scale == 0.0) {
+        LARGE_INTEGER timer_frequency;
+        QueryPerformanceFrequency(&timer_frequency);
+        timer_frequency_scale = 1e3 / timer_frequency.QuadPart;
+    }
+
+    return timer_frequency_scale *
+           (task_2->time_start.QuadPart - task_1->time_start.QuadPart);
 #endif
 }
 

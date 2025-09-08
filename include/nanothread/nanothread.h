@@ -231,6 +231,12 @@ pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *payload);
  *     when only encodes a small amount of work (\c size == 1). Otherwise
  *     it will be executed synchronously, and the function will return \c nullptr.
  *
+ * \param profile
+ *     If set to a nonzero value, nanothread will keep track of the start and
+ *     end time of the task. This behavior will also be enabled if
+ *     \ref pool_set_profile() is used to enable profiling globally.
+ *
+ *
  * \return
  *     A task handle that must eventually be released via \ref task_release()
  *     or \ref task_wait_and_release(). The function returns \c nullptr when
@@ -247,7 +253,8 @@ Task *task_submit_dep(Pool *pool,
                       void *payload NANOTHREAD_DEF(0),
                       uint32_t payload_size NANOTHREAD_DEF(0),
                       void (*payload_deleter)(void *) NANOTHREAD_DEF(0),
-                      int always_async NANOTHREAD_DEF(0));
+                      int always_async NANOTHREAD_DEF(0),
+                      int profile NANOTHREAD_DEF(0));
 
 /*
  * \brief Release a task handle so that it can eventually be reused
@@ -303,12 +310,43 @@ extern NANOTHREAD_EXPORT void task_wait(Task *task) NANOTHREAD_THROW;
 extern NANOTHREAD_EXPORT void task_wait_and_release(Task *task) NANOTHREAD_THROW;
 
 /**
+ * \brief Query whether a task has completed without blocking
+ *
+ * This function checks if all work units of the specified task have been
+ * completed. Unlike \ref task_wait(), this function returns immediately
+ * without blocking.
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the function returns true.
+ *
+ * \return
+ *     true if the task has completed (or is nullptr), false otherwise.
+ */
+extern NANOTHREAD_EXPORT bool task_query(Task *task);
+
+/**
  * \brief Return the time consumed by the task in milliseconds
  *
- * To use this function, you must first enable time profiling via \ref
- * pool_set_profile() before launching tasks.
+ * To use this function, the underlying task must have been launched via \ref
+ * task_submit_dep() with the ``profile`` argument set to a nonzero value.
+ * Alternatively, you may call \ref pool_set_profile() before launching tasks
+ * to automatically enable profiling globally.
+ *
+ * The task must have finished previously, use \ref task_wait() if in doubt.
  */
 extern NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW;
+
+/**
+ * \brief Return the difference between the start time of two different tasks
+ *
+ * To use this function, the underlying task2 must have been launched via \ref
+ * task_submit_dep() with the ``profile`` argument set to a nonzero value.
+ * Alternatively, you may call \ref pool_set_profile() before launching tasks
+ * to automatically enable profiling globally.
+ *
+ * Both tasks must have finished previously, use \ref task_wait() if in doubt.
+ */
+extern NANOTHREAD_EXPORT double task_time_rel(Task *task_1, Task *task_2) NANOTHREAD_THROW;
 
 /*
  * \brief Increase the reference count of a task

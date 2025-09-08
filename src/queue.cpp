@@ -179,7 +179,7 @@ void TaskQueue::release(Task *task, bool high) {
     if (!high && ref_lo == 0) {
         NT_TRACE("all work associated with task %p has completed.", task);
 
-        if (profile_tasks) {
+        if (task->profile) {
             #if defined(_WIN32)
                 QueryPerformanceCounter(&task->time_end);
             #elif defined(__APPLE__)
@@ -383,7 +383,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
     if (task) {
         NT_TRACE("pop(task=%p, index=%u)", task, index);
 
-        if (index == 0 && profile_tasks) {
+        if (index == 0 && task->profile) {
             #if defined(_WIN32)
                 QueryPerformanceCounter(&task->time_start);
             #elif defined(__APPLE__)

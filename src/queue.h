@@ -119,11 +119,14 @@ struct Task {
     /// Successor tasks that depend on this task
     std::vector<Task *> children;
 
+    /// Pointer to an exception in case the task failed
+    std::exception_ptr exception;
+
     /// Atomic flag stating whether the 'exception' field is already used
     std::atomic<bool> exception_used;
 
-    /// Pointer to an exception in case the task failed
-    std::exception_ptr exception;
+    /// Record the start/end time of this task?
+    bool profile;
 
 #if defined(__APPLE__)
     uint64_t time_start, time_end;
