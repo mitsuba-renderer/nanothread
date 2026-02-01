@@ -16,6 +16,7 @@
 
 #if defined(__linux__)
 #  include <unistd.h>
+#  include <sched.h>
 #elif defined(_WIN32)
 #  include <windows.h>
 #  include <processthreadsapi.h>
@@ -90,7 +91,7 @@ uint32_t core_count() {
         /* The kernel may expect a larger cpu_set_t than would
            be warranted by the physical core count. Keep querying
            with increasingly larger buffers if the
-           pthread_getaffinity_np operation fails */
+           sched_getaffinity operation fails */
         for (uint32_t i = 0; i < 10; ++i) {
             size = CPU_ALLOC_SIZE(ncores_logical);
             cpuset = CPU_ALLOC(ncores_logical);
@@ -100,7 +101,7 @@ uint32_t core_count() {
             }
             CPU_ZERO_S(size, cpuset);
 
-            int retval = pthread_getaffinity_np(pthread_self(), size, cpuset);
+            retval = sched_getaffinity(0, size, cpuset);
             if (retval == 0)
                 break;
             CPU_FREE(cpuset);
