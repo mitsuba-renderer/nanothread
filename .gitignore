@@ -1,6 +1,7 @@
 /.clangd
 /compile_commands.json
 *.cmake
+!nanothreadConfig.cmake
 CMakeCache.txt
 CMakeFiles
 Makefile
