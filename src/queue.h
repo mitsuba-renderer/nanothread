@@ -261,7 +261,11 @@ private:
 
 extern "C" uint32_t pool_thread_id();
 
-extern int profile_tasks;
+#if defined(_MSC_VER)
+  extern __declspec(thread) int profile_tasks;
+#else
+  extern __thread int profile_tasks;
+#endif
 
 #define NT_STR_2(x) #x
 #define NT_STR(x)   NT_STR_2(x)
