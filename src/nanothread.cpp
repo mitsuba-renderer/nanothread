@@ -23,6 +23,10 @@
 #elif defined(__APPLE__)
 #  include <pthread.h>
 #  include <os/workgroup.h>
+#  include <Availability.h>
+#  if __MAC_OS_X_VERSION_MIN_REQUIRED < 110000
+#    error "nanothread requires a macOS deployment target of 11.0 or later"
+#  endif
 #endif
 
 #if defined(_MSC_VER)
@@ -58,6 +62,8 @@ struct Pool {
     /// Parallel workgroup advising the scheduler to co-schedule these
     /// threads on the same performance cluster (as in GCD's dispatch_apply).
     os_workgroup_t workgroup = nullptr;
+    os_workgroup_join_token_s join_token;
+    pthread_t joiner = nullptr;
 #endif
 };
 
@@ -159,8 +165,12 @@ Pool *pool_create(uint32_t size, int ftz) {
         size = cc > 1 ? cc - 1 : cc;
     }
 #if defined(__APPLE__)
-    if (__builtin_available(macOS 11.0, iOS 14.0, *))
-        pool->workgroup = os_workgroup_parallel_create("drjit nanothread", nullptr);
+    // Co-schedule the creating thread with the workers; pool_destroy
+    // leaves on our behalf if called from the same thread.
+    pool->workgroup = os_workgroup_parallel_create("nanothread", nullptr);
+    if (pool->workgroup &&
+        os_workgroup_join(pool->workgroup, &pool->join_token) == 0)
+        pool->joiner = pthread_self();
 #endif
     NT_TRACE("pool_create(%p)", pool);
     pool_set_size(pool, size);
@@ -173,8 +183,9 @@ void pool_destroy(Pool *pool) {
         pool_set_size(pool, 0);
 #if defined(__APPLE__)
         if (pool->workgroup) {
-            if (__builtin_available(macOS 11.0, iOS 14.0, *))
-                os_release(pool->workgroup);
+            if (pool->joiner && pthread_equal(pthread_self(), pool->joiner))
+                os_workgroup_leave(pool->workgroup, &pool->join_token);
+            os_release(pool->workgroup);
             pool->workgroup = nullptr;
         }
 #endif
@@ -569,12 +580,9 @@ void Worker::run() {
     // Join the parallel workgroup for the lifetime of this worker.
     os_workgroup_join_token_s wg_token;
     bool wg_joined = false;
-    if (pool->workgroup) {
-        if (__builtin_available(macOS 11.0, iOS 14.0, *)) {
-            if (os_workgroup_join(pool->workgroup, &wg_token) == 0)
-                wg_joined = true;
-        }
-    }
+    if (pool->workgroup &&
+        os_workgroup_join(pool->workgroup, &wg_token) == 0)
+        wg_joined = true;
 #endif
 
     FTZGuard ftz_guard(ftz);
@@ -584,10 +592,8 @@ void Worker::run() {
             true);
 
 #if defined(__APPLE__)
-    if (wg_joined) {
-        if (__builtin_available(macOS 11.0, iOS 14.0, *))
-            os_workgroup_leave(pool->workgroup, &wg_token);
-    }
+    if (wg_joined)
+        os_workgroup_leave(pool->workgroup, &wg_token);
 #endif
 
     NT_TRACE("worker stopped");

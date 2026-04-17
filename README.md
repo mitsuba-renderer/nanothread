@@ -167,7 +167,7 @@ void my_task(uint32_t index, void *payload) {
 int main(int argc, char** argv) {
     uint32_t temp[100];
 
-    // Create a worker per CPU thread
+    // Create a thread pool with a default worker count
     Pool *pool = pool_create(NANOTHREAD_AUTO);
 
     // Synchronous interface: submit a task and wait for it to complete

@@ -56,8 +56,9 @@ extern "C" {
  *
  * \param size
  *     Specifies the desired number of threads. The default value of
- *     \c NANOTHREAD_AUTO choses a thread count equal to the number of
- *     available cores.
+ *     \c NANOTHREAD_AUTO chooses a thread count one less than the number
+ *     of available cores, reserving a slot for the calling thread, which
+ *     participates by executing tasks inside \ref task_wait().
  *
  * \param ftz
  *     Should denormalized floating point numbers be flushed to zero?
