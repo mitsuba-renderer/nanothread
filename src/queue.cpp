@@ -59,6 +59,10 @@ static inline double time_milliseconds() {
 static void cas_pause() {
 #if defined(_M_X64) || defined(__SSE2__)
     _mm_pause();
+#elif defined(_M_ARM64) || defined(_M_ARM)
+    __yield();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield" ::: "memory");
 #endif
 }
 
