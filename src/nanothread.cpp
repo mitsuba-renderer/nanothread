@@ -22,6 +22,8 @@
 #  include <processthreadsapi.h>
 #elif defined(__APPLE__)
 #  include <pthread.h>
+#  include <pthread/qos.h>
+#  include <sys/sysctl.h>
 #  include <os/workgroup.h>
 #  include <Availability.h>
 #  if __MAC_OS_X_VERSION_MIN_REQUIRED < 110000
@@ -83,6 +85,7 @@ struct Worker {
 static Pool *pool_default_inst = nullptr;
 static Lock pool_default_lock;
 static uint32_t cached_core_count = 0;
+static uint32_t cached_perf_core_count = 0;
 
 uint32_t core_count() {
     // assumes atomic word size memory access
@@ -139,6 +142,24 @@ uint32_t core_count() {
     return ncores;
 }
 
+uint32_t performance_core_count() {
+    if (cached_perf_core_count)
+        return cached_perf_core_count;
+
+    uint32_t n = 0;
+#if defined(__APPLE__)
+    size_t size = sizeof(n);
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &n, &size, nullptr, 0) != 0)
+        n = 0;
+#endif
+
+    if (n == 0)
+        n = core_count();
+
+    cached_perf_core_count = n;
+    return n;
+}
+
 
 uint32_t pool_thread_id() {
     return thread_id_tls;
@@ -157,20 +178,23 @@ Pool *pool_create(uint32_t size, int ftz) {
     Pool *pool = new Pool();
     pool->ftz = ftz != 0;
     if (size == (uint32_t) -1) {
-        // One fewer worker than cores: the caller thread blocking in
-        // task_wait counts toward the runnable set, so N workers + caller
-        // = N runnable threads on N cores and no worker gets preempted
+        // One fewer worker than performance cores: the caller thread
+        // also participates in task_wait, so N-1 workers + caller = N
+        // runnable threads on N cores and no worker gets preempted
         // mid-task.
-        uint32_t cc = core_count();
+        uint32_t cc = performance_core_count();
         size = cc > 1 ? cc - 1 : cc;
     }
 #if defined(__APPLE__)
     // Co-schedule the creating thread with the workers; pool_destroy
-    // leaves on our behalf if called from the same thread.
+    // leaves on our behalf if called from the same thread. Match the
+    // workers' QoS so the caller is also biased to the performance
+    // cluster.
     pool->workgroup = os_workgroup_parallel_create("nanothread", nullptr);
     if (pool->workgroup &&
         os_workgroup_join(pool->workgroup, &pool->join_token) == 0)
         pool->joiner = pthread_self();
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
 #endif
     NT_TRACE("pool_create(%p)", pool);
     pool_set_size(pool, size);
@@ -205,7 +229,7 @@ uint32_t pool_size(Pool *pool) {
     if (pool) {
         return (uint32_t) pool->workers.size();
     } else {
-        uint32_t cc = core_count();
+        uint32_t cc = performance_core_count();
         return cc > 1 ? cc - 1 : cc;
     }
 }
@@ -577,6 +601,10 @@ void Worker::run() {
     #endif
 
 #if defined(__APPLE__)
+    // Raise the QoS class so the scheduler keeps workers on the
+    // performance cluster.
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+
     // Join the parallel workgroup for the lifetime of this worker.
     os_workgroup_join_token_s wg_token;
     bool wg_joined = false;

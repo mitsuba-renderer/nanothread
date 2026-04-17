@@ -56,9 +56,10 @@ extern "C" {
  *
  * \param size
  *     Specifies the desired number of threads. The default value of
- *     \c NANOTHREAD_AUTO chooses a thread count one less than the number
- *     of available cores, reserving a slot for the calling thread, which
- *     participates by executing tasks inside \ref task_wait().
+ *     \c NANOTHREAD_AUTO uses one less than \ref
+ *     performance_core_count(), reserving a slot for the calling thread,
+ *     which also participates in parallel execution inside \ref
+ *     task_wait().
  *
  * \param ftz
  *     Should denormalized floating point numbers be flushed to zero?
@@ -82,6 +83,21 @@ extern NANOTHREAD_EXPORT void pool_destroy(Pool *pool NANOTHREAD_DEF(0));
 
 /// Returns the number of available CPU cores.
 extern NANOTHREAD_EXPORT uint32_t core_count();
+
+/**
+ * \brief Returns the number of performance cores available to the process.
+ *
+ * Some processors split their cores into performance-oriented and
+ * efficiency-oriented groups. This function reports the size of the
+ * performance group; on processors without such a split, it is
+ * equivalent to \ref core_count().
+ *
+ * The default thread pool size is derived from this value: using the
+ * efficiency cores tends to be a net loss, since the slower efficiency
+ * cores become stragglers that delay barrier-synchronized parallel
+ * regions.
+ */
+extern NANOTHREAD_EXPORT uint32_t performance_core_count();
 
 /**
  * \brief Return the number of threads that are part of the pool
@@ -374,7 +390,7 @@ Task *task_submit(Pool *pool,
                   int always_async NANOTHREAD_DEF(0)) {
 
     return task_submit_dep(pool, 0, 0, size, func, payload, payload_size,
-                           payload_deleter, always_async);
+                           payload_deleter, always_async, 0);
 }
 
 /// Convenience wrapper around task_submit(), but fully synchronous
