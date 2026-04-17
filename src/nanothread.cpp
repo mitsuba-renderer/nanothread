@@ -141,8 +141,14 @@ Pool *pool_default() {
 Pool *pool_create(uint32_t size, int ftz) {
     Pool *pool = new Pool();
     pool->ftz = ftz != 0;
-    if (size == (uint32_t) -1)
-        size = core_count();
+    if (size == (uint32_t) -1) {
+        // One fewer worker than cores: the caller thread blocking in
+        // task_wait counts toward the runnable set, so N workers + caller
+        // = N runnable threads on N cores and no worker gets preempted
+        // mid-task.
+        uint32_t cc = core_count();
+        size = cc > 1 ? cc - 1 : cc;
+    }
     NT_TRACE("pool_create(%p)", pool);
     pool_set_size(pool, size);
     return pool;
@@ -165,10 +171,12 @@ uint32_t pool_size(Pool *pool) {
         pool = pool_default_inst;
     }
 
-    if (pool)
+    if (pool) {
         return (uint32_t) pool->workers.size();
-    else
-        return core_count();
+    } else {
+        uint32_t cc = core_count();
+        return cc > 1 ? cc - 1 : cc;
+    }
 }
 
 void pool_set_size(Pool *pool, uint32_t size) {
