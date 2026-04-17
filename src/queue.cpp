@@ -22,8 +22,38 @@
 #  include <emmintrin.h>
 #endif
 
-/// Put worker threads to sleep after 500K attempts to get work
-#define NANOTHREAD_MAX_ATTEMPTS 500000
+/// Put worker threads to sleep after this many milliseconds without work
+#define NANOTHREAD_MAX_IDLE_MS 20.0
+
+/// Consult the wall clock once every (mask + 1) iterations of the busy loop.
+#define NANOTHREAD_IDLE_CHECK_MASK 0xFFFu
+
+#if defined(_WIN32)
+/// Scale factor converting QueryPerformanceCounter ticks to milliseconds.
+/// The timer frequency is fixed for the lifetime of the process, so we cache
+/// it at dynamic-initialization time and keep the hot path branch-free.
+static const double timer_frequency_scale = []() {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    return 1e3 / (double) freq.QuadPart;
+}();
+#endif
+
+/// Monotonic wall-clock time in milliseconds. Does not require a context
+/// switch on the target platforms.
+static inline double time_milliseconds() {
+#if defined(_WIN32)
+    LARGE_INTEGER ticks;
+    QueryPerformanceCounter(&ticks);
+    return timer_frequency_scale * (double) ticks.QuadPart;
+#elif defined(__APPLE__)
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000.0;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+#endif
+}
 
 /// Reduce power usage in busy-wait CAS loops
 static void cas_pause() {
@@ -405,32 +435,12 @@ void TaskQueue::wakeup() {
     sleep_cv.notify_all();
 }
 
-#if defined(NT_DEBUG)
-double time_milliseconds() {
-    #if defined(_WIN32)
-        LARGE_INTEGER ticks, ticks_per_sec;
-        QueryPerformanceCounter(&ticks);
-        QueryPerformanceFrequency(&ticks_per_sec);
-        return (double) (ticks.QuadPart * 1000) / (double) ticks_per_sec.QuadPart;
-    #elif defined(__APPLE__)
-        return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000.0;
-    #else
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return ts.tv_sec * 1000 + ts.tv_nsec / 1000000.0;
-    #endif
-}
-#endif
-
 std::pair<Task *, uint32_t>
 TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
                         bool may_sleep) {
-        std::pair<Task *, uint32_t> result(nullptr, 0);
-        uint32_t attempts = 0;
-
-#if defined(NT_DEBUG)
-    double start = time_milliseconds();
-#endif
+    std::pair<Task *, uint32_t> result(nullptr, 0);
+    uint32_t attempts = 0;
+    double start_ms = time_milliseconds();
 
     while (true) {
         result = pop();
@@ -438,15 +448,18 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
         if (result.first || stopping_criterion(payload))
             break;
 
-        attempts++;
-
-        if (may_sleep && attempts >= NANOTHREAD_MAX_ATTEMPTS) {
+        /* Go to sleep once the worker has been unable to find work for at
+           least NANOTHREAD_MAX_IDLE_MS of wall-clock time. The clock is only
+           polled once every NANOTHREAD_IDLE_CHECK_MASK+1 attempts to keep the
+           spin loop cheap. */
+        if (may_sleep && ((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) == 0 &&
+            time_milliseconds() - start_ms >= NANOTHREAD_MAX_IDLE_MS) {
             std::unique_lock<std::mutex> guard(sleep_mutex);
 
             uint64_t value = ++sleep_state, phase = value & high_mask;
             NT_TRACE("pop_or_sleep(): falling asleep after %.2f milliseconds, "
                      "sleep_state := (%u, %u)!",
-                     time_milliseconds() - start, (uint32_t)(value >> 32),
+                     time_milliseconds() - start_ms, (uint32_t)(value >> 32),
                      (uint32_t) value);
 
             // Try once more to fetch a job
@@ -488,6 +501,12 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
             value = sleep_state.load();
             NT_TRACE("pop_or_sleep(): woke up -- sleep_state=(%u, %u)",
                      (uint32_t)(value >> 32), (uint32_t) value);
+
+            /* Wake-up means activity just happened. Reset the idle clock so
+               that the worker gets a fresh spin window to try to pick up work,
+               rather than immediately re-sleeping with a stale start_ms. */
+            start_ms = time_milliseconds();
+            attempts = 0;
         }
     }
 
