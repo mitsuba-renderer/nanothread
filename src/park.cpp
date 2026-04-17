@@ -31,25 +31,27 @@ static_assert(sizeof(std::atomic<uint32_t>) == sizeof(uint32_t) &&
 #  include <sys/syscall.h>
 #  include <unistd.h>
 #elif defined(__APPLE__)
-// macOS 14.4+ public wait-on-address API. Weak-imported so a binary built
-// against an older SDK still links, with a runtime probe selecting the
-// primitive below. The flags parameter is an ``OS_OPTIONS`` enum backed by
-// ``uint32_t`` in the public header -- match that ABI via a local typedef so
-// the redeclaration is type-compatible with Apple's.
-typedef uint32_t os_sync_wait_on_address_flags_t;
-typedef uint32_t os_sync_wake_by_address_flags_t;
+#  include <dlfcn.h>
+// macOS 14.4+ public wait-on-address API. Resolved via ``dlsym`` so the
+// binary carries no link-time reference -- a build against an older SDK
+// still links, and the runtime probe below picks the ``condition_variable``
+// fallback when the symbols are absent. The flags parameter is an
+// ``OS_OPTIONS`` enum backed by ``uint32_t`` in the public header.
+typedef int (*os_sync_wait_on_address_fn)(void *addr, uint64_t value,
+                                          size_t size, uint32_t flags);
+typedef int (*os_sync_wake_by_address_all_fn)(void *addr, size_t size,
+                                              uint32_t flags);
 
-extern "C" int os_sync_wait_on_address(void *addr, uint64_t value,
-                                       size_t size,
-                                       os_sync_wait_on_address_flags_t flags)
-    __attribute__((weak_import));
-extern "C" int os_sync_wake_by_address_all(void *addr, size_t size,
-                                           os_sync_wake_by_address_flags_t flags)
-    __attribute__((weak_import));
+static os_sync_wait_on_address_fn os_sync_wait_on_address_p =
+    (os_sync_wait_on_address_fn) dlsym(RTLD_DEFAULT,
+                                       "os_sync_wait_on_address");
+static os_sync_wake_by_address_all_fn os_sync_wake_by_address_all_p =
+    (os_sync_wake_by_address_all_fn) dlsym(RTLD_DEFAULT,
+                                           "os_sync_wake_by_address_all");
 
 static bool has_native_wait() {
-    return os_sync_wait_on_address != nullptr &&
-           os_sync_wake_by_address_all != nullptr;
+    return os_sync_wait_on_address_p != nullptr &&
+           os_sync_wake_by_address_all_p != nullptr;
 }
 #endif
 
@@ -63,7 +65,7 @@ static void atomic_wait_u32(std::atomic<uint32_t> *addr, uint32_t expected) {
 #elif defined(_WIN32)
     WaitOnAddress(addr, &expected, sizeof(expected), INFINITE);
 #elif defined(__APPLE__)
-    os_sync_wait_on_address(addr, (uint64_t) expected, sizeof(uint32_t), 0);
+    os_sync_wait_on_address_p(addr, (uint64_t) expected, sizeof(uint32_t), 0);
 #else
 #  error "Parking: no wait-on-address primitive available for this platform"
 #endif
@@ -75,7 +77,7 @@ static void atomic_wake_all_u32(std::atomic<uint32_t> *addr) {
 #elif defined(_WIN32)
     WakeByAddressAll(addr);
 #elif defined(__APPLE__)
-    os_sync_wake_by_address_all(addr, sizeof(uint32_t), 0);
+    os_sync_wake_by_address_all_p(addr, sizeof(uint32_t), 0);
 #else
 #  error "Parking: no wait-on-address primitive available for this platform"
 #endif
