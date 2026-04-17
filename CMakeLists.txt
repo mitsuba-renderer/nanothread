@@ -47,10 +47,11 @@ endif()
 target_sources(nanothread PRIVATE
   include/nanothread/nanothread.h
   src/queue.cpp src/queue.h
+  src/park.cpp src/park.h
   src/nanothread.cpp
 )
 
-target_compile_features(nanothread PRIVATE cxx_std_11)
+target_compile_features(nanothread PRIVATE cxx_std_17)
 target_include_directories(nanothread PRIVATE include)
 
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|x86_64.*|AMD64.*")
@@ -67,6 +68,11 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
   endif()
   target_link_libraries(nanothread PRIVATE ${LIBATOMIC})
   mark_as_advanced(LIBATOMIC)
+endif()
+
+if (WIN32)
+  # WaitOnAddress / WakeByAddressAll live in Synchronization.lib (Win 8+).
+  target_link_libraries(nanothread PRIVATE Synchronization)
 endif()
 
 target_include_directories(nanothread

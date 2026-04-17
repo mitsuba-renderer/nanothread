@@ -120,7 +120,7 @@ static Task::Ptr ldar(Task::Ptr &source) {
 #endif
 }
 
-TaskQueue::TaskQueue() : tasks_created(0), sleep_state(0) {
+TaskQueue::TaskQueue() : tasks_created(0) {
     head = Task::Ptr(alloc(0));
     tail = head;
 }
@@ -368,9 +368,7 @@ void TaskQueue::push(Task *task) {
         cas_pause();
     }
 
-    // Wake sleeping threads, if any
-    if (sleep_state.load(std::memory_order_acquire) & low_mask)
-        wakeup();
+    parking.wakeup();
 }
 
 std::pair<Task *, uint32_t> TaskQueue::pop() {
@@ -435,11 +433,7 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
 }
 
 void TaskQueue::wakeup() {
-    std::unique_lock<std::mutex> guard(sleep_mutex);
-    uint64_t value = sleep_state.load();
-    NT_TRACE("wakeup(): sleep_state := (%u, 0)", (uint32_t) (sleep_state >> 32) + 1);
-    sleep_state = (value + high_bit) & high_mask;
-    sleep_cv.notify_all();
+    parking.wakeup();
 }
 
 std::pair<Task *, uint32_t>
@@ -457,64 +451,26 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
 
         /* Go to sleep once the worker has been unable to find work for at
            least NANOTHREAD_MAX_IDLE_MS of wall-clock time. The clock is only
-           polled once every NANOTHREAD_IDLE_CHECK_MASK+1 attempts to keep the
-           spin loop cheap. */
-        if (may_sleep && ((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) == 0 &&
-            time_milliseconds() - start_ms >= NANOTHREAD_MAX_IDLE_MS) {
-            std::unique_lock<std::mutex> guard(sleep_mutex);
+           polled once every NANOTHREAD_IDLE_CHECK_MASK+1 attempts to keep
+           the spin loop cheap. */
+        if (!may_sleep || ((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) != 0 ||
+            time_milliseconds() - start_ms < NANOTHREAD_MAX_IDLE_MS)
+            continue;
 
-            uint64_t value = ++sleep_state, phase = value & high_mask;
-            NT_TRACE("pop_or_sleep(): falling asleep after %.2f milliseconds, "
-                     "sleep_state := (%u, %u)!",
-                     time_milliseconds() - start_ms, (uint32_t)(value >> 32),
-                     (uint32_t) value);
+        // Park/wake handshake -- see Parking in park.h.
+        uint32_t token = parking.enter();
+        result = pop();
+        if (!result.first && !stopping_criterion(payload))
+            parking.park(token);
+        parking.leave();
 
-            // Try once more to fetch a job
-            result = pop();
+        if (result.first || stopping_criterion(payload))
+            break;
 
-            /* If the following is true, somebody added work, or the stopping
-               became active while this thread was about to go to sleep. */
-            if (result.first || stopping_criterion(payload)) {
-                // Reduce sleep_state if we're still in the same phase.
-                NT_TRACE("sleep aborted.");
-                while (true) {
-                    if (sleep_state.compare_exchange_strong(value, value - 1))
-                        break;
-                    if ((value & high_mask) != phase)
-                        break;
-                    cas_pause();
-                }
-                break;
-            }
-
-            /* The push() code above has the structure
-
-                - A1. Enqueue work
-                - A2. Check sleep_state, and wake threads if nonzero
-
-               While the code here has the structure
-
-                - B1. Increase sleep_state
-                - B2. Try to dequeue work
-                - B3. Wait for wakeup signal
-
-               This ordering excludes the possibility that the thread sleeps
-               erroneously while work is available or added later on.
-            */
-
-            while ((sleep_state & high_mask) == phase)
-                sleep_cv.wait(guard);
-
-            value = sleep_state.load();
-            NT_TRACE("pop_or_sleep(): woke up -- sleep_state=(%u, %u)",
-                     (uint32_t)(value >> 32), (uint32_t) value);
-
-            /* Wake-up means activity just happened. Reset the idle clock so
-               that the worker gets a fresh spin window to try to pick up work,
-               rather than immediately re-sleeping with a stale start_ms. */
-            start_ms = time_milliseconds();
-            attempts = 0;
-        }
+        // Returning from park() means new work just arrived; give the
+        // worker a fresh spin window before potentially re-sleeping.
+        start_ms = time_milliseconds();
+        attempts = 0;
     }
 
     return result;

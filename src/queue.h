@@ -9,9 +9,9 @@
 
 #pragma once
 
+#include "park.h"
 #include <atomic>
 #include <vector>
-#include <condition_variable>
 #include <type_traits>
 #include <exception>
 #include <cstring>
@@ -252,14 +252,8 @@ private:
     /// Number of task instances created (for debugging)
     std::atomic<uint32_t> tasks_created;
 
-    /// Upper 32 bit: sleep phase, lower 32 bit: number of sleepers
-    std::atomic<uint64_t> sleep_state;
-
-    /// Mutex protecting the fields below
-    std::mutex sleep_mutex;
-
-    /// Condition variable used to manage workers that are asleep
-    std::condition_variable sleep_cv;
+    /// Worker park/wakeup state (see park.h).
+    Parking parking;
 };
 
 
