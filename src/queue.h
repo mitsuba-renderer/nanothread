@@ -35,6 +35,15 @@ constexpr uint64_t low_mask  = (uint64_t) 0x00000000FFFFFFFFull;
 
 inline uint64_t shift(uint32_t value) { return ((uint64_t) value) << 32; }
 
+/// Monotonic wall-clock time in platform-native units (nanoseconds on
+/// Apple/Linux, ``QueryPerformanceCounter`` ticks on Windows).
+extern uint64_t get_time_raw();
+
+#if defined(_WIN32)
+/// Ticks-to-milliseconds scale, initialized at dynamic-init time in queue.cpp.
+extern const double timer_frequency_scale_ms;
+#endif
+
 struct Task {
     /**
      * \brief Wide 16 byte pointer to a task in the worker pool. In addition to the
@@ -128,13 +137,8 @@ struct Task {
     /// Record the start/end time of this task?
     bool profile;
 
-#if defined(__APPLE__)
-    uint64_t time_start, time_end;
-#elif !defined(_WIN32)
-    timespec time_start, time_end;
-#else
-    LARGE_INTEGER time_start, time_end;
-#endif
+    /// Start/end timestamps in \ref get_time_raw units.
+    std::atomic<uint64_t> time_start, time_end;
 
     /// Fixed-size payload storage region
     alignas(8) uint8_t payload_storage[256];

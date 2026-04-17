@@ -308,28 +308,14 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 
             Task *task = pool->queue.alloc(size);
 
-            if (profile_task) {
-                #if defined(_WIN32)
-                    QueryPerformanceCounter(&task->time_start);
-                #elif defined(__APPLE__)
-                    task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-                #else
-                    clock_gettime(CLOCK_MONOTONIC, &task->time_start);
-                #endif
-            }
+            if (profile_task)
+                task->time_start.store(get_time_raw(), std::memory_order_relaxed);
 
             if (func)
                 func(0, payload);
 
-            if (profile_task) {
-                #if defined(_WIN32)
-                    QueryPerformanceCounter(&task->time_end);
-                #elif defined(__APPLE__)
-                    task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-                #else
-                    clock_gettime(CLOCK_MONOTONIC, &task->time_end);
-                #endif
-            }
+            if (profile_task)
+                task->time_end.store(get_time_raw(), std::memory_order_relaxed);
 
             if (payload_deleter)
                 payload_deleter(payload);
@@ -524,50 +510,29 @@ bool task_query(Task *task) {
     return remaining == 0;
 }
 
+/// Convert a \ref get_time_raw delta to milliseconds; return 0 for invalid inputs.
+static double raw_delta_ms(uint64_t end, uint64_t start) {
+    if (start == 0 || end == 0 || end < start)
+        return 0.0;
 #if defined(_WIN32)
-static double timer_frequency_scale = 0.0;
+    return timer_frequency_scale_ms * (double) (end - start);
+#else
+    return (double) (end - start) * 1e-6;
 #endif
+}
 
 NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW {
     if (!task)
         return 0;
-
-#if defined(__APPLE__)
-    return (task->time_end - task->time_start) * 1e-6;
-#elif !defined(_WIN32)
-    return (task->time_end.tv_sec - task->time_start.tv_sec) * 1e3 +
-           (task->time_end.tv_nsec - task->time_start.tv_nsec) * 1e-6;
-#else
-    if (timer_frequency_scale == 0.0) {
-        LARGE_INTEGER timer_frequency;
-        QueryPerformanceFrequency(&timer_frequency);
-        timer_frequency_scale = 1e3 / timer_frequency.QuadPart;
-    }
-
-    return timer_frequency_scale *
-           (task->time_end.QuadPart - task->time_start.QuadPart);
-#endif
+    return raw_delta_ms(task->time_end.load(std::memory_order_relaxed),
+                        task->time_start.load(std::memory_order_relaxed));
 }
 
 NANOTHREAD_EXPORT double task_time_rel(Task *task_1, Task *task_2) NANOTHREAD_THROW {
     if (!task_1 || !task_2)
         return 0;
-
-#if defined(__APPLE__)
-    return (task_2->time_start - task_1->time_start) * 1e-6;
-#elif !defined(_WIN32)
-    return (task_2->time_start.tv_sec - task_1->time_start.tv_sec) * 1e3 +
-           (task_2->time_start.tv_nsec - task_1->time_start.tv_nsec) * 1e-6;
-#else
-    if (timer_frequency_scale == 0.0) {
-        LARGE_INTEGER timer_frequency;
-        QueryPerformanceFrequency(&timer_frequency);
-        timer_frequency_scale = 1e3 / timer_frequency.QuadPart;
-    }
-
-    return timer_frequency_scale *
-           (task_2->time_start.QuadPart - task_1->time_start.QuadPart);
-#endif
+    return raw_delta_ms(task_2->time_start.load(std::memory_order_relaxed),
+                        task_1->time_start.load(std::memory_order_relaxed));
 }
 
 Worker::Worker(Pool *pool, uint32_t id, bool ftz)

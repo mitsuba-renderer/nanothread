@@ -32,7 +32,8 @@
 /// Scale factor converting QueryPerformanceCounter ticks to milliseconds.
 /// The timer frequency is fixed for the lifetime of the process, so we cache
 /// it at dynamic-initialization time and keep the hot path branch-free.
-static const double timer_frequency_scale = []() {
+/// Declared ``extern`` in queue.h so ``task_time`` can reuse it.
+extern const double timer_frequency_scale_ms = []() {
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
     return 1e3 / (double) freq.QuadPart;
@@ -45,13 +46,29 @@ static inline double time_milliseconds() {
 #if defined(_WIN32)
     LARGE_INTEGER ticks;
     QueryPerformanceCounter(&ticks);
-    return timer_frequency_scale * (double) ticks.QuadPart;
+    return timer_frequency_scale_ms * (double) ticks.QuadPart;
 #elif defined(__APPLE__)
     return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000.0;
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+#endif
+}
+
+/// Monotonic wall-clock time in platform-native units (ns on Apple/Linux,
+/// ``QueryPerformanceCounter`` ticks on Windows). ``task_time`` converts.
+uint64_t get_time_raw() {
+#if defined(_WIN32)
+    LARGE_INTEGER ticks;
+    QueryPerformanceCounter(&ticks);
+    return (uint64_t) ticks.QuadPart;
+#elif defined(__APPLE__)
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
 #endif
 }
 
@@ -189,8 +206,8 @@ Task *TaskQueue::alloc(uint32_t size) {
     task->wait_parents.store(0, std::memory_order_relaxed);
     task->wait_count.store(0, std::memory_order_relaxed);
     task->size = size;
-    memset(&task->time_start, 0, sizeof(task->time_start));
-    memset(&task->time_end, 0, sizeof(task->time_end));
+    task->time_start.store(0, std::memory_order_relaxed);
+    task->time_end.store(0, std::memory_order_relaxed);
 
     NT_TRACE("created new task %p with size=%u", task, size);
 
@@ -198,6 +215,9 @@ Task *TaskQueue::alloc(uint32_t size) {
 }
 
 void TaskQueue::release(Task *task, bool high) {
+    if (!high && task->profile)
+        task->time_end.store(get_time_raw(), std::memory_order_relaxed);
+
     uint64_t result = task->refcount.fetch_sub(high ? high_bit : 1);
     uint32_t ref_lo = (uint32_t) result,
              ref_hi = (uint32_t) (result >> 32);
@@ -212,16 +232,6 @@ void TaskQueue::release(Task *task, bool high) {
     // If all work has completed: schedule children and free payload
     if (!high && ref_lo == 0) {
         NT_TRACE("all work associated with task %p has completed.", task);
-
-        if (task->profile) {
-            #if defined(_WIN32)
-                QueryPerformanceCounter(&task->time_end);
-            #elif defined(__APPLE__)
-                task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-            #else
-                clock_gettime(CLOCK_MONOTONIC, &task->time_end);
-            #endif
-        }
 
         for (Task *child : task->children) {
             uint32_t wait = child->wait_parents.fetch_sub(1);
@@ -417,15 +427,8 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
     if (task) {
         NT_TRACE("pop(task=%p, index=%u)", task, index);
 
-        if (index == 0 && task->profile) {
-            #if defined(_WIN32)
-                QueryPerformanceCounter(&task->time_start);
-            #elif defined(__APPLE__)
-                task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-            #else
-                clock_gettime(CLOCK_MONOTONIC, &task->time_start);
-            #endif
-        }
+        if (index == 0 && task->profile)
+            task->time_start.store(get_time_raw(), std::memory_order_relaxed);
     }
 
     return { task, index };
