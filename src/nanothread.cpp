@@ -20,6 +20,9 @@
 #elif defined(_WIN32)
 #  include <windows.h>
 #  include <processthreadsapi.h>
+#elif defined(__APPLE__)
+#  include <pthread.h>
+#  include <os/workgroup.h>
 #endif
 
 #if defined(_MSC_VER)
@@ -50,6 +53,12 @@ struct Pool {
 
     /// Should denormalized floating point numbers be flushed to zero?
     bool ftz = true;
+
+#if defined(__APPLE__)
+    /// Parallel workgroup advising the scheduler to co-schedule these
+    /// threads on the same performance cluster (as in GCD's dispatch_apply).
+    os_workgroup_t workgroup = nullptr;
+#endif
 };
 
 struct Worker {
@@ -149,6 +158,10 @@ Pool *pool_create(uint32_t size, int ftz) {
         uint32_t cc = core_count();
         size = cc > 1 ? cc - 1 : cc;
     }
+#if defined(__APPLE__)
+    if (__builtin_available(macOS 11.0, iOS 14.0, *))
+        pool->workgroup = os_workgroup_parallel_create("drjit nanothread", nullptr);
+#endif
     NT_TRACE("pool_create(%p)", pool);
     pool_set_size(pool, size);
     return pool;
@@ -158,6 +171,13 @@ Pool *pool_create(uint32_t size, int ftz) {
 void pool_destroy(Pool *pool) {
     if (pool) {
         pool_set_size(pool, 0);
+#if defined(__APPLE__)
+        if (pool->workgroup) {
+            if (__builtin_available(macOS 11.0, iOS 14.0, *))
+                os_release(pool->workgroup);
+            pool->workgroup = nullptr;
+        }
+#endif
         delete pool;
     } else if (pool_default_inst) {
         pool_destroy(pool_default_inst);
@@ -184,10 +204,8 @@ void pool_set_size(Pool *pool, uint32_t size) {
         std::unique_lock<Lock> guard(pool_default_lock);
         pool = pool_default_inst;
 
-        if (!pool) {
-            pool = pool_default_inst = new Pool();
-            NT_TRACE("pool_create(%p)", pool);
-        }
+        if (!pool)
+            pool = pool_default_inst = pool_create(0);
     }
 
     NT_TRACE("pool_set_size(%p, %u)", pool, size);
@@ -547,11 +565,30 @@ void Worker::run() {
         #endif
     #endif
 
+#if defined(__APPLE__)
+    // Join the parallel workgroup for the lifetime of this worker.
+    os_workgroup_join_token_s wg_token;
+    bool wg_joined = false;
+    if (pool->workgroup) {
+        if (__builtin_available(macOS 11.0, iOS 14.0, *)) {
+            if (os_workgroup_join(pool->workgroup, &wg_token) == 0)
+                wg_joined = true;
+        }
+    }
+#endif
+
     FTZGuard ftz_guard(ftz);
     while (!stop)
         pool_execute_task(
             pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop,
             true);
+
+#if defined(__APPLE__)
+    if (wg_joined) {
+        if (__builtin_available(macOS 11.0, iOS 14.0, *))
+            os_workgroup_leave(pool->workgroup, &wg_token);
+    }
+#endif
 
     NT_TRACE("worker stopped");
 
