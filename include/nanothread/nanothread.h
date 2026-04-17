@@ -55,11 +55,13 @@ extern "C" {
  * \brief Create a new thread pool
  *
  * \param size
- *     Specifies the desired number of threads. The default value of
- *     \c NANOTHREAD_AUTO uses one less than \ref
- *     performance_core_count(), reserving a slot for the calling thread,
- *     which also participates in parallel execution inside \ref
- *     task_wait().
+ *     Specifies the desired number of threads available for parallel
+ *     work, including the calling thread (which also participates in
+ *     execution inside \ref task_wait()). The default value of
+ *     \c NANOTHREAD_AUTO uses \ref performance_core_count(). Passing
+ *     \c size = 0 or \c size = 1 disables worker threads entirely; the
+ *     calling thread then performs all parallel work during
+ *     \ref task_wait(). Otherwise, \c size - 1 worker threads are spawned.
  *
  * \param ftz
  *     Should denormalized floating point numbers be flushed to zero?
@@ -100,7 +102,12 @@ extern NANOTHREAD_EXPORT uint32_t core_count();
 extern NANOTHREAD_EXPORT uint32_t performance_core_count();
 
 /**
- * \brief Return the number of threads that are part of the pool
+ * \brief Return the number of threads available for parallel work.
+ *
+ * The returned count includes the calling thread, which participates
+ * in task execution inside \ref task_wait(). A return value of 1 means
+ * that no worker threads have been spawned and all parallel work runs
+ * on the calling thread.
  *
  * \param pool
  *     The thread pool to query. \c nullptr refers to the default pool.
@@ -108,7 +115,12 @@ extern NANOTHREAD_EXPORT uint32_t performance_core_count();
 extern NANOTHREAD_EXPORT uint32_t pool_size(Pool *pool NANOTHREAD_DEF(0));
 
 /**
- * \brief Resize the thread pool to the given number of threads
+ * \brief Resize the thread pool.
+ *
+ * The \c size parameter counts the calling thread, which participates
+ * in task execution inside \ref task_wait(). Passing \c size = 0 or
+ * \c size = 1 disables worker threads entirely. Otherwise, \c size - 1
+ * worker threads are spawned.
  *
  * \param pool
  *     The thread pool to resize. \c nullptr refers to the default pool.

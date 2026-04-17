@@ -177,14 +177,8 @@ Pool *pool_default() {
 Pool *pool_create(uint32_t size, int ftz) {
     Pool *pool = new Pool();
     pool->ftz = ftz != 0;
-    if (size == (uint32_t) -1) {
-        // One fewer worker than performance cores: the caller thread
-        // also participates in task_wait, so N-1 workers + caller = N
-        // runnable threads on N cores and no worker gets preempted
-        // mid-task.
-        uint32_t cc = performance_core_count();
-        size = cc > 1 ? cc - 1 : cc;
-    }
+    if (size == (uint32_t) -1)
+        size = performance_core_count();
 #if defined(__APPLE__)
     // Co-schedule the creating thread with the workers; pool_destroy
     // leaves on our behalf if called from the same thread. Match the
@@ -226,12 +220,10 @@ uint32_t pool_size(Pool *pool) {
         pool = pool_default_inst;
     }
 
-    if (pool) {
-        return (uint32_t) pool->workers.size();
-    } else {
-        uint32_t cc = performance_core_count();
-        return cc > 1 ? cc - 1 : cc;
-    }
+    if (pool)
+        return (uint32_t) pool->workers.size() + 1;
+    else
+        return performance_core_count();
 }
 
 void pool_set_size(Pool *pool, uint32_t size) {
@@ -245,7 +237,11 @@ void pool_set_size(Pool *pool, uint32_t size) {
 
     NT_TRACE("pool_set_size(%p, %u)", pool, size);
 
-    int diff = (int) size - (int) pool->workers.size();
+    // `size` counts the calling thread as a worker, so subtract one.
+    // `size == 0` is accepted as a shorthand for "no worker threads".
+    uint32_t workers = size > 0 ? size - 1 : 0;
+
+    int diff = (int) workers - (int) pool->workers.size();
     if (diff > 0) {
         // Launch extra worker threads
         for (int i = 0; i < diff; ++i)

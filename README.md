@@ -252,7 +252,9 @@ software written in C99).
 The functions ``task_wait()`` and ``task_wait_and_release()`` do not just
 wait---they spend the wait time fetching and executing work from the task
 queue, which has two implications: first, it is not wasteful to wait for the
-completion of another task while executing a task. Second, the thread pool can
-be set to a size of zero via ``pool_create(0)`` or ``pool_set_size(pool, 0)``,
-in which case the program will still run correctly without launching any
-additional threads.
+completion of another task while executing a task. Second, the calling thread
+counts as one of the pool's threads, so ``pool_create(0)``,
+``pool_create(1)``, ``pool_set_size(pool, 0)`` or ``pool_set_size(pool, 1)``
+all disable worker threads entirely. In this case the program still runs
+correctly: the calling thread performs all parallel work inside
+``task_wait()``.
