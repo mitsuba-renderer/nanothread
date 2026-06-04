@@ -73,7 +73,7 @@ struct Worker {
     Pool *pool;
     std::thread thread;
     uint32_t id;
-    bool stop;
+    std::atomic<bool> stop;
     bool ftz;
 
     Worker(Pool *pool, uint32_t id, bool ftz);
@@ -250,7 +250,8 @@ void pool_set_size(Pool *pool, uint32_t size) {
     } else if (diff < 0) {
         // Remove worker threads (destructor calls join())
         for (int i = diff; i != 0; ++i)
-            pool->workers[pool->workers.size() + i]->stop = true;
+            pool->workers[pool->workers.size() + i]->stop.store(
+                true, std::memory_order_relaxed);
         pool->queue.wakeup();
         for (int i = diff; i != 0; ++i)
             pool->workers.pop_back();
@@ -575,10 +576,14 @@ void Worker::run() {
 #endif
 
     FTZGuard ftz_guard(ftz);
-    while (!stop)
+    while (!stop.load(std::memory_order_relaxed))
         pool_execute_task(
-            pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop,
-            true);
+            pool,
+            [](void *ptr) -> bool {
+                return ((std::atomic<bool> *) ptr)
+                    ->load(std::memory_order_relaxed);
+            },
+            &stop, true);
 
 #if defined(__APPLE__)
     if (wg_joined)

@@ -120,6 +120,19 @@ static Task::Ptr ldar(Task::Ptr &source) {
 #endif
 }
 
+// *Non-atomic* 16 byte store mirroring \ref ldar().
+static void star(Task::Ptr &target, Task::Ptr value) {
+#if defined(_MSC_VER)
+    using P = unsigned __int64 volatile *;
+    *((P) &target)       = (uint64_t) value.task;
+    *(((P) &target) + 1) = (uint64_t) value.value;
+#else
+    __atomic_store_n((uint64_t *) &target, (uint64_t) value.task,
+                     __ATOMIC_RELAXED);
+    __atomic_store_n(((uint64_t *) &target) + 1, value.value, __ATOMIC_RELAXED);
+#endif
+}
+
 TaskQueue::TaskQueue() : tasks_created(0) {
     head = Task::Ptr(alloc(0));
     tail = head;
@@ -200,7 +213,7 @@ Task *TaskQueue::alloc(uint32_t size) {
         tasks_created++;
     }
 
-    task->next = Task::Ptr();
+    star(task->next, Task::Ptr());
     task->refcount.store(size + (size == 0 ? high_bit : (3 * high_bit)),
                          std::memory_order_relaxed);
     task->wait_parents.store(0, std::memory_order_relaxed);
@@ -275,7 +288,7 @@ void TaskQueue::release(Task *task, bool high) {
 
         Task::Ptr node = ldar(recycle);
         while (true) {
-            task->next = node;
+            star(task->next, node);
 
             if (cas(recycle, node, node.update_task(task)))
                 break;
@@ -289,8 +302,10 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
     if (!parent)
         return;
 
+    /* Acquire load pairs with 'refcount.fetch_sub' in release() that a
+       throwing worker performs *after* writing 'exception'. */
     uint64_t refcount =
-        parent->refcount.load(std::memory_order_relaxed);
+        parent->refcount.load(std::memory_order_acquire);
 
     /* Increase the parent task's reference count to prevent the cleanup
        handler in release() from starting while the following executes. */
@@ -313,7 +328,7 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
 
         if (parent->refcount.compare_exchange_weak(refcount, refcount + 1,
                                                    std::memory_order_release,
-                                                   std::memory_order_relaxed))
+                                                   std::memory_order_acquire))
             break;
 
         cas_pause();
