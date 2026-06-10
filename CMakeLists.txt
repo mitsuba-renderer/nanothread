@@ -75,15 +75,6 @@ if (WIN32)
   target_link_libraries(nanothread PRIVATE Synchronization)
 endif()
 
-# Opt into faster TLS ABI (TLSDESC) on Linux
-if(NOT (MSVC OR WIN32 OR APPLE))
-  include(CheckCXXCompilerFlag)
-  check_cxx_compiler_flag(-mtls-dialect=gnu2 HAVE_MTLS_GNU2)
-  if(HAVE_MTLS_GNU2)
-    add_compile_options(-mtls-dialect=gnu2)
-  endif()
-endif()
-
 target_include_directories(nanothread
   PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
