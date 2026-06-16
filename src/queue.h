@@ -243,11 +243,15 @@ public:
     void wakeup();
 
 private:
+    /// Cache line size used to separate independently-contended cursors.
+    static constexpr size_t cacheline = 64;
+
     /// Head and tail of a lock-free list data structure
-    Task::Ptr head, tail;
+    alignas(cacheline) Task::Ptr head;
+    alignas(cacheline) Task::Ptr tail;
 
     /// Head of a lock-free stack storing unused tasks
-    Task::Ptr recycle;
+    alignas(cacheline) Task::Ptr recycle;
 
     /// Number of task instances created (for debugging)
     std::atomic<uint32_t> tasks_created;
