@@ -133,7 +133,7 @@ static void star(Task::Ptr &target, Task::Ptr value) {
 #endif
 }
 
-TaskQueue::TaskQueue() : tasks_created(0) {
+TaskQueue::TaskQueue() : tasks_created(0), ready_units(0), worker_count(0) {
     head = Task::Ptr(alloc(0));
     tail = head;
 }
@@ -275,9 +275,9 @@ void TaskQueue::release(Task *task, bool high) {
 
         task->clear();
 
-        // Possible that waiting threads were put to sleep
+        // Wake task_wait() helpers without disturbing idle workers.
         if (task->wait_count.load() > 0)
-            wakeup();
+            wake_helpers();
 
         release(task, true);
     } else if (high && ref_hi == 0) {
@@ -358,6 +358,9 @@ void TaskQueue::push(Task *task) {
 
     NT_TRACE("push(task=%p, size=%u)", task, size);
 
+    // Relaxed: `ready_units` is advisory (wake/park heuristic only).
+    ready_units.fetch_add(size, std::memory_order_relaxed);
+
     while (true) {
         // Lead tail and tail->next, and double-check, in this order
         Task::Ptr tail_c = ldar(tail);
@@ -383,7 +386,8 @@ void TaskQueue::push(Task *task) {
         cas_pause();
     }
 
-    parking.wakeup();
+    wake_workers();
+    helper_parking.wake_n(size);
 }
 
 std::pair<Task *, uint32_t> TaskQueue::pop() {
@@ -416,6 +420,11 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
                     if (cas(head, head_c, head_c.update_task(next_c.task))) {
                         task = next_c.task;
                         index = task->size - 1;
+                        // Account for the whole task in one shot at retirement
+                        // instead of touching the shared `ready_units` cacheline
+                        // on every unit claim.
+                        ready_units.fetch_sub(task->size,
+                                              std::memory_order_relaxed);
                         release(head_c.task, true);
                         break;
                     }
@@ -439,6 +448,9 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
 
     if (task) {
         NT_TRACE("pop(task=%p, index=%u)", task, index);
+        // NB: `ready_units` is decremented per task at retirement (see the
+        // head-removal branch above), not per unit, to keep the shared counter
+        // off the hot claim path.
 
         if (index == 0 && task->profile)
             task->time_start.store(get_time_raw(), std::memory_order_relaxed);
@@ -447,13 +459,54 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
     return { task, index };
 }
 
-void TaskQueue::wakeup() {
-    parking.wakeup();
+void TaskQueue::wake_everyone() {
+    worker_parking.wake_n(UINT32_MAX);
+    helper_parking.wake_n(UINT32_MAX);
+}
+
+void TaskQueue::wake_helpers() {
+    helper_parking.wake_n(UINT32_MAX);
+}
+
+void TaskQueue::worker_started() {
+    worker_count.fetch_add(1, std::memory_order_release);
+}
+
+void TaskQueue::worker_stopped() {
+    worker_count.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+uint32_t TaskQueue::worker_deficit() const {
+    uint32_t workers = worker_count.load(std::memory_order_acquire);
+    if (workers == 0)
+        return 0;
+
+    uint32_t ready = ready_units.load(std::memory_order_relaxed);
+    if (ready == 0)
+        return 0;
+
+    uint32_t sleepers = worker_parking.sleepers();
+    if (sleepers > workers)
+        sleepers = workers;
+
+    uint32_t awake = workers - sleepers,
+             desired = ready < workers ? ready : workers;
+
+    return desired > awake ? desired - awake : 0;
+}
+
+void TaskQueue::wake_workers() {
+    // wake_n() broadcasts in a single syscall when the deficit covers every
+    // parked worker, otherwise it releases exactly that many.
+    uint32_t deficit = worker_deficit();
+    if (deficit)
+        worker_parking.wake_n(deficit);
 }
 
 std::pair<Task *, uint32_t>
 TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
-                        bool may_sleep) {
+                        bool may_sleep, SleepKind sleep_kind,
+                        bool park_immediately) {
     std::pair<Task *, uint32_t> result(nullptr, 0);
     uint32_t attempts = 0;
     double start_ms = time_milliseconds();
@@ -464,19 +517,45 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
         if (result.first || stopping_criterion(payload))
             break;
 
+        if (!may_sleep)
+            continue;
+
         /* Go to sleep once the worker has been unable to find work for at
            least NANOTHREAD_MAX_IDLE_MS of wall-clock time. The clock is only
            polled once every NANOTHREAD_IDLE_CHECK_MASK+1 attempts to keep
-           the spin loop cheap. */
-        if (!may_sleep || ((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) != 0 ||
-            time_milliseconds() - start_ms < NANOTHREAD_MAX_IDLE_MS)
+           the spin loop cheap. A freshly booted "start parked" worker skips
+           this warm-up spin and parks on its first idle poll. */
+        if (!park_immediately &&
+            (((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) != 0 ||
+             time_milliseconds() - start_ms < NANOTHREAD_MAX_IDLE_MS))
             continue;
+        park_immediately = false;
 
         // Park/wake handshake -- see Parking in park.h.
+        Parking &parking =
+            sleep_kind == SleepKind::Worker ? worker_parking : helper_parking;
         uint32_t token = parking.enter();
         result = pop();
-        if (!result.first && !stopping_criterion(payload))
+        bool idle = !result.first && !stopping_criterion(payload);
+
+        if (idle) {
+            // Final sleep gate: re-check the deficit while counted as a
+            // sleeper. If the queue visibly still needs this worker, back out
+            // and keep polling instead of parking, so a stale producer-side
+            // wake cannot strand work. We are about to resume polling and so
+            // cover one unit of the deficit ourselves; wake peers for the rest.
+            uint32_t deficit =
+                sleep_kind == SleepKind::Worker ? worker_deficit() : 0;
+            if (deficit > 0) {
+                parking.leave();
+                worker_parking.wake_n(deficit - 1);
+                start_ms = time_milliseconds();
+                attempts = 0;
+                continue;
+            }
+
             parking.park(token);
+        }
         parking.leave();
 
         if (result.first || stopping_criterion(payload))

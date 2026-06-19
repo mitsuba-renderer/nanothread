@@ -17,13 +17,13 @@
 #endif
 
 /**
- * \brief Park/wakeup primitive for idle queue workers.
+ * \brief Park/wakeup primitive for idle queue participants.
  *
- * Task-queue workers spin on the queue while work is plentiful, but once
- * they have been idle for a while, the spin loop burns CPU cycles for no
- * gain and they should block until new work arrives. ``Parking`` handles
- * that transition: workers announce intent to sleep, suspend, and are
- * released en masse the moment a producer posts work.
+ * Task-queue participants spin on the queue while work is plentiful, but
+ * once they have been idle for a while, the spin loop burns CPU cycles for
+ * no gain and they should block until work or completion events arrive.
+ * ``Parking`` handles that transition: participants announce intent to
+ * sleep, suspend, and are released by a producer or completer.
  *
  * The implementation uses the OS-native compare-and-sleep facility
  * (``futex`` on Linux, ``WaitOnAddress`` on Windows,
@@ -34,20 +34,20 @@
  * \code
  *   // Producer
  *   enqueue(work);
- *   parking.wakeup();
+ *   parking.wake_n(n);
  *
- *   // Worker
+ *   // Participant
  *   uint32_t token = parking.enter();
  *   if (!try_dequeue() && !should_stop)
- *       parking.park(token);   // blocks until producer calls wakeup()
+ *       parking.park(token);   // blocks until producer calls wake_...()
  *   parking.leave();
  * \endcode
  *
- * The handshake is lost-wake-free: either ``wakeup()`` sees the worker's
- * ``enter()`` and signals it, or the worker's re-check observes the
+ * The handshake is lost-wake-free: either ``wake_...()`` sees the participant's
+ * ``enter()`` and signals it, or the participant's re-check observes the
  * producer's enqueue and skips the park. This is the classic Dekker
  * pattern and requires a StoreLoad fence on both sides; ``enter()`` and
- * ``wakeup()`` therefore access the sleeper counter with
+ * ``wake_...()`` therefore access the sleeper counter with
  * ``memory_order_seq_cst``. Plain release/acquire would leave a lost-wake
  * window on weakly ordered architectures such as AArch64.
  */
@@ -55,15 +55,16 @@ class Parking {
 public:
     Parking();
 
-    /// Wake every currently-parked worker. Cheap (single atomic load) when
-    /// no workers are parked.
-    void wakeup();
+    /// Wake up to \c count currently-parked participants (pass \c UINT32_MAX
+    /// to wake all). Cheap (single atomic load) when no participants are
+    /// parked.
+    void wake_n(uint32_t count);
 
     /// Announce intent to park; returns a token to pass to \ref park().
     /// Must be balanced by a call to \ref leave().
     uint32_t enter();
 
-    /// Block until \ref wakeup() is called. The caller must have first
+    /// Block until a wake operation is called. The caller must have first
     /// called \ref enter(), and must re-check its predicate after \ref
     /// park() returns -- spurious wake-ups are possible.
     void park(uint32_t token);
@@ -71,13 +72,16 @@ public:
     /// Release the slot acquired by \ref enter().
     void leave();
 
+    /// Return the number of participants that are parked or about to park.
+    uint32_t sleepers() const;
+
 private:
-    /// Phase counter incremented by each \ref wakeup(). Workers park on
+    /// Phase counter incremented by each wake operation. Participants park on
     /// this address using the OS-native compare-and-sleep primitive.
     std::atomic<uint32_t> phase;
 
     /// Number of workers currently parked or about to park. Consulted by
-    /// \ref wakeup() to skip the syscall when nobody is listening.
+    /// wake operations to skip the syscall when nobody is listening.
     std::atomic<uint32_t> sleeper_count;
 
 #if defined(__APPLE__)

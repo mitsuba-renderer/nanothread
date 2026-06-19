@@ -124,8 +124,15 @@ extern NANOTHREAD_EXPORT uint32_t pool_size(Pool *pool NANOTHREAD_DEF(0));
  *
  * \param pool
  *     The thread pool to resize. \c nullptr refers to the default pool.
+ *
+ * \param start_parked
+ *     Controls whether the worker threads added by this call go to sleep
+ *     immediately. This avoids a startup CPU/power spike when an application
+ *     starts and does not have any parallel work yet. Only relevant when
+ *     growing the pool.
  */
-extern NANOTHREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
+extern NANOTHREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size,
+                                            int start_parked NANOTHREAD_DEF(1));
 
 /**
  * \brief Enable/disable time profiling
@@ -206,7 +213,7 @@ pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *payload);
  * The function returns a task handle that can be used to schedule other
  * dependent tasks, and to wait for task completion if desired. This handle
  * must eventually be released using \ref task_release() or \ref
- * task_release_and_wait(). A failure to do so will result in memory leaks.
+ * task_wait_and_release(). A failure to do so will result in memory leaks.
  *
  * <b>Small task optimization</b>: If desired, small tasks can be executed
  * right away without using the thread pool. This happens under the following
@@ -296,9 +303,6 @@ Task *task_submit_dep(Pool *pool,
  * longer be used as a direct parent of other tasks, and it is no longer
  * possible to wait for its completion using an operation like \ref
  * task_wait().
- *
- * \param pool
- *     The thread pool containing the task. \c nullptr refers to the default pool.
  *
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.

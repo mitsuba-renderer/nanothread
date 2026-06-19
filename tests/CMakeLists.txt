@@ -12,3 +12,7 @@ target_compile_features(test_03 PRIVATE cxx_std_14)
 add_executable(test_04 test_04.cpp)
 target_link_libraries(test_04 PRIVATE nanothread)
 target_compile_features(test_04 PRIVATE cxx_std_11)
+
+add_executable(test_05 test_05.cpp)
+target_link_libraries(test_05 PRIVATE nanothread)
+target_compile_features(test_05 PRIVATE cxx_std_11)

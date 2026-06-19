@@ -29,11 +29,13 @@ using Lock = std::mutex;
 
 struct Pool;
 
+enum class SleepKind : uint8_t {
+    Worker,
+    Helper
+};
+
 constexpr uint64_t high_bit  = (uint64_t) 0x0000000100000000ull;
 constexpr uint64_t high_mask = (uint64_t) 0xFFFFFFFF00000000ull;
-constexpr uint64_t low_mask  = (uint64_t) 0x00000000FFFFFFFFull;
-
-inline uint64_t shift(uint32_t value) { return ((uint64_t) value) << 32; }
 
 /// Monotonic wall-clock time in platform-native units (nanoseconds on
 /// Apple/Linux, ``QueryPerformanceCounter`` ticks on Windows).
@@ -174,6 +176,11 @@ struct Task {
  * memory architecture (e.g. AArch64), but likely would not not work an
  * completely weakly ordered architecture like the DEC Alpha.
  */
+#if defined(_MSC_VER)
+#  pragma warning(push)
+// C4324: structure was padded due to alignment specifier.
+#  pragma warning(disable : 4324)
+#endif
 struct TaskQueue {
 public:
     /// Create an empty task queue
@@ -226,10 +233,10 @@ public:
     std::pair<Task *, uint32_t> pop();
 
     /**
-     * \breif Fetch a task from the queue, or sleep
+     * \brief Fetch a task from the queue, or sleep
      *
      * This function repeatedly tries to fetch work from the queue and sleeps
-     * if no work is available for an extended amount of time (~50 ms) and
+     * if no work is available for an extended amount of time (~20 ms) and
      * the \c may_sleep parameter is set to \c true.
      *
      * The function stops trying to acquire work and returns <tt>(nullptr,
@@ -237,12 +244,27 @@ public:
      * evaluates to true.
      */
     std::pair<Task *, uint32_t> pop_or_sleep(bool (*stopping_criterion)(void *),
-                                             void *payload, bool may_sleep);
+                                             void *payload, bool may_sleep,
+                                             SleepKind sleep_kind,
+                                             bool park_immediately);
 
-    /// Wake sleeping threads
-    void wakeup();
+    /// Wake every sleeping participant. Used for shutdown and other global events.
+    void wake_everyone();
+
+    /// Wake helpers waiting in task_wait()/pool_work_until().
+    void wake_helpers();
+
+    /// Register/unregister a worker thread that can participate in execution.
+    void worker_started();
+    void worker_stopped();
 
 private:
+    /// Wake sleeping workers if queued work exceeds awake workers.
+    void wake_workers();
+
+    /// Number of additional workers needed based on current queue/parking state.
+    uint32_t worker_deficit() const;
+
     /// Cache line size used to separate independently-contended cursors.
     static constexpr size_t cacheline = 64;
 
@@ -256,9 +278,21 @@ private:
     /// Number of task instances created (for debugging)
     std::atomic<uint32_t> tasks_created;
 
-    /// Worker park/wakeup state (see park.h).
-    Parking parking;
+    /// Number of queued work units that have not yet been claimed.
+    std::atomic<uint32_t> ready_units;
+
+    /// Number of live worker threads associated with this queue.
+    std::atomic<uint32_t> worker_count;
+
+    /// Idle worker park/wakeup state (see park.h).
+    Parking worker_parking;
+
+    /// Helper-thread park/wakeup state used by task_wait().
+    Parking helper_parking;
 };
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 
 
 extern "C" uint32_t pool_thread_id();
@@ -282,4 +316,3 @@ extern int profile_tasks;
                         ":" NT_STR(__LINE__) ": " #x "\n");                    \
         abort();                                                               \
     }
-

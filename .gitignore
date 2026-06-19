@@ -8,7 +8,7 @@ Makefile
 \.cache
 \.ninja_*
 Testing
-build
+build*/
 .vscode
 *.vcxproj
 *.vcxproj.filters
@@ -20,4 +20,4 @@ Debug
 libnanothread.so
 libnanothread.dylib
 nanothread.dll
-tests/test_0[1-4]
+tests/test_0[1-9]
