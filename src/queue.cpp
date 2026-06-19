@@ -222,7 +222,8 @@ Task *TaskQueue::alloc(uint32_t size) {
     task->time_start.store(0, std::memory_order_relaxed);
     task->time_end.store(0, std::memory_order_relaxed);
 
-    NT_TRACE("created new task %p with size=%u", task, size);
+    NT_TRACE("%s task %p with size=%u",
+             node.task ? "reusing recycled" : "created new", task, size);
 
     return task;
 }
@@ -239,8 +240,8 @@ void TaskQueue::release(Task *task, bool high) {
     ref_hi -= (uint32_t) high;
     ref_lo -= (uint32_t) !high;
 
-    NT_TRACE("dec_ref(%p, (%i, %i)) -> ref = (%u, %u)", task, (int) high,
-             (int) !high, ref_hi, ref_lo);
+    NT_TRACE("release(task=%p, %s) -> refcount=(hi=%u, lo=%u)", task,
+             high ? "high" : "low", ref_hi, ref_lo);
 
     // If all work has completed: schedule children and free payload
     if (!high && ref_lo == 0) {
@@ -490,9 +491,13 @@ uint32_t TaskQueue::worker_deficit() const {
         sleepers = workers;
 
     uint32_t awake = workers - sleepers,
-             desired = ready < workers ? ready : workers;
+             desired = ready < workers ? ready : workers,
+             deficit = desired > awake ? desired - awake : 0;
 
-    return desired > awake ? desired - awake : 0;
+    NT_TRACE("worker deficit=%u (ready=%u, awake=%u/%u)", deficit, ready, awake,
+             workers);
+
+    return deficit;
 }
 
 void TaskQueue::wake_workers() {
@@ -547,6 +552,8 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
             uint32_t deficit =
                 sleep_kind == SleepKind::Worker ? worker_deficit() : 0;
             if (deficit > 0) {
+                NT_TRACE("sleep gate: staying awake, waking %u peer(s)",
+                         deficit - 1);
                 parking.leave();
                 worker_parking.wake_n(deficit - 1);
                 start_ms = time_milliseconds();
@@ -554,7 +561,12 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
                 continue;
             }
 
+            NT_TRACE("park (%s, idle=%.1f ms)",
+                     sleep_kind == SleepKind::Worker ? "worker" : "helper",
+                     time_milliseconds() - start_ms);
             parking.park(token);
+            NT_TRACE("unpark (%s)",
+                     sleep_kind == SleepKind::Worker ? "worker" : "helper");
         }
         parking.leave();
 

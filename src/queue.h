@@ -302,7 +302,7 @@ extern int profile_tasks;
 #define NT_STR_2(x) #x
 #define NT_STR(x)   NT_STR_2(x)
 
-// #define NT_DEBUG
+// NT_DEBUG is defined by the NANOTHREAD_ENABLE_TRACE CMake option.
 #if defined(NT_DEBUG)
 #  define NT_TRACE(fmt, ...)                                                  \
       fprintf(stderr, "%03u: " fmt "\n", pool_thread_id(), ##__VA_ARGS__)

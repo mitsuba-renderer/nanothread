@@ -139,6 +139,9 @@ void Parking::wake_n(uint32_t count) {
     // in one syscall, so the per-waiter loop below never runs there.
     bool all = count >= sleepers;
 
+    NT_TRACE("wake_n: releasing %u of %u parked%s", all ? sleepers : count,
+             sleepers, all ? " (broadcast)" : "");
+
     phase.fetch_add(1, std::memory_order_release);
 
 #if defined(__APPLE__)

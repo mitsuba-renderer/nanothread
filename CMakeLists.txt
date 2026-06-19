@@ -10,12 +10,26 @@ project(nanothread
     CXX C
 )
 
+# Is nanothread the top-level project, or embedded via add_subdirectory()?
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(NANOTHREAD_MASTER_PROJECT ON)
+else()
+  set(NANOTHREAD_MASTER_PROJECT OFF)
+endif()
+
 # ----------------------------------------------------------
 #  Optional features available to users
 # ----------------------------------------------------------
 
 option(NANOTHREAD_STATIC "Build as static library?" OFF)
 option(NANOTHREAD_ENABLE_TESTS "Build test suite?" OFF)
+
+# Trace logging is noisy and meant for debugging nanothread itself, so only
+# expose it when nanothread is the top-level project.
+include(CMakeDependentOption)
+cmake_dependent_option(NANOTHREAD_ENABLE_TRACE
+  "Print trace-level debug messages to stderr?" OFF
+  "NANOTHREAD_MASTER_PROJECT" OFF)
 
 # ----------------------------------------------------------
 #  Check if submodules have been checked out, or fail early
@@ -82,6 +96,11 @@ target_include_directories(nanothread
 
 target_compile_definitions(nanothread PRIVATE -DNANOTHREAD_BUILD=1)
 set_target_properties(nanothread PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+
+if (NANOTHREAD_ENABLE_TRACE)
+  # Activates the NT_TRACE() messages defined in src/queue.h.
+  target_compile_definitions(nanothread PRIVATE NT_DEBUG)
+endif()
 
 if (NANOTHREAD_ENABLE_TESTS)
    add_subdirectory(tests)

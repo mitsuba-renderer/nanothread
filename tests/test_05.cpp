@@ -44,7 +44,7 @@ int main(int, char **) {
     // pool_size() counts the calling thread; it bounds achievable parallelism.
     uint32_t participants = pool_size(pool);
 
-    printf("test_05: %u participants (incl. calling thread), %u ms/unit\n",
+    fprintf(stderr, "test_05: %u participants (incl. calling thread), %u ms/unit\n",
            participants, DURATION_MS);
 
     const double limit_ms = DURATION_MS + WAKE_BUDGET_MS;
@@ -66,7 +66,7 @@ int main(int, char **) {
         bool serialized = elapsed_ms > limit_ms;
         ok &= !serialized;
 
-        printf("  %4u unit(s): %8.1f ms%s\n", k, elapsed_ms,
+        fprintf(stderr, "  %4u unit(s): %8.1f ms%s\n", k, elapsed_ms,
                serialized ? "   <-- SERIALIZED!" : "");
 
         if (k == participants)
@@ -76,10 +76,10 @@ int main(int, char **) {
     pool_destroy(pool);
 
     if (!ok) {
-        printf("test_05: FAILED -- one or more batches did not run in parallel\n");
+        fprintf(stderr, "test_05: FAILED -- one or more batches did not run in parallel\n");
         abort();
     }
 
-    printf("test_05: success\n");
+    fprintf(stderr, "test_05: success\n");
     return 0;
 }
