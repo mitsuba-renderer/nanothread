@@ -58,11 +58,11 @@ struct Pool {
     bool ftz = true;
 
 #if defined(__APPLE__)
-    /// Parallel workgroup advising the scheduler to co-schedule these
+    /// Parallel workgroup advising the scheduler to co-schedule the worker
     /// threads on the same performance cluster (as in GCD's dispatch_apply).
+    /// Each worker joins/leaves on its own thread (see worker function); the
+    /// creating thread deliberately does *not* join.
     os_workgroup_t workgroup = nullptr;
-    os_workgroup_join_token_s join_token;
-    pthread_t joiner = nullptr;
 #endif
 };
 
@@ -178,14 +178,9 @@ Pool *pool_create(uint32_t size, int ftz) {
     Pool *pool = new Pool();
     pool->ftz = ftz != 0;
 #if defined(__APPLE__)
-    // Co-schedule the creating thread with the workers; pool_destroy
-    // leaves on our behalf if called from the same thread. Match the
-    // workers' QoS so the caller is also biased to the performance
-    // cluster.
+    // Create the workgroup the workers co-schedule on, and bias this thread to
+    // the performance cluster.
     pool->workgroup = os_workgroup_parallel_create("nanothread", nullptr);
-    if (pool->workgroup &&
-        os_workgroup_join(pool->workgroup, &pool->join_token) == 0)
-        pool->joiner = pthread_self();
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
 #endif
     NT_TRACE("pool_create(%p)", pool);
@@ -199,8 +194,6 @@ void pool_destroy(Pool *pool) {
         pool_set_size(pool, 0);
 #if defined(__APPLE__)
         if (pool->workgroup) {
-            if (pool->joiner && pthread_equal(pthread_self(), pool->joiner))
-                os_workgroup_leave(pool->workgroup, &pool->join_token);
             os_release(pool->workgroup);
             pool->workgroup = nullptr;
         }
