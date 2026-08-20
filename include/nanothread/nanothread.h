@@ -55,9 +55,13 @@ extern "C" {
  * \brief Create a new thread pool
  *
  * \param size
- *     Specifies the desired number of threads. The default value of
- *     \c NANOTHREAD_AUTO choses a thread count equal to the number of
- *     available cores.
+ *     Specifies the desired number of threads available for parallel
+ *     work, including the calling thread (which also participates in
+ *     execution inside \ref task_wait()). The default value of
+ *     \c NANOTHREAD_AUTO uses \ref performance_core_count(). Passing
+ *     \c size = 0 or \c size = 1 disables worker threads entirely; the
+ *     calling thread then performs all parallel work during
+ *     \ref task_wait(). Otherwise, \c size - 1 worker threads are spawned.
  *
  * \param ftz
  *     Should denormalized floating point numbers be flushed to zero?
@@ -83,7 +87,27 @@ extern NANOTHREAD_EXPORT void pool_destroy(Pool *pool NANOTHREAD_DEF(0));
 extern NANOTHREAD_EXPORT uint32_t core_count();
 
 /**
- * \brief Return the number of threads that are part of the pool
+ * \brief Returns the number of performance cores available to the process.
+ *
+ * Some processors split their cores into performance-oriented and
+ * efficiency-oriented groups. This function reports the size of the
+ * performance group; on processors without such a split, it is
+ * equivalent to \ref core_count().
+ *
+ * The default thread pool size is derived from this value: using the
+ * efficiency cores tends to be a net loss, since the slower efficiency
+ * cores become stragglers that delay barrier-synchronized parallel
+ * regions.
+ */
+extern NANOTHREAD_EXPORT uint32_t performance_core_count();
+
+/**
+ * \brief Return the number of threads available for parallel work.
+ *
+ * The returned count includes the calling thread, which participates
+ * in task execution inside \ref task_wait(). A return value of 1 means
+ * that no worker threads have been spawned and all parallel work runs
+ * on the calling thread.
  *
  * \param pool
  *     The thread pool to query. \c nullptr refers to the default pool.
@@ -91,12 +115,24 @@ extern NANOTHREAD_EXPORT uint32_t core_count();
 extern NANOTHREAD_EXPORT uint32_t pool_size(Pool *pool NANOTHREAD_DEF(0));
 
 /**
- * \brief Resize the thread pool to the given number of threads
+ * \brief Resize the thread pool.
+ *
+ * The \c size parameter counts the calling thread, which participates
+ * in task execution inside \ref task_wait(). Passing \c size = 0 or
+ * \c size = 1 disables worker threads entirely. Otherwise, \c size - 1
+ * worker threads are spawned.
  *
  * \param pool
  *     The thread pool to resize. \c nullptr refers to the default pool.
+ *
+ * \param start_parked
+ *     Controls whether the worker threads added by this call go to sleep
+ *     immediately. This avoids a startup CPU/power spike when an application
+ *     starts and does not have any parallel work yet. Only relevant when
+ *     growing the pool.
  */
-extern NANOTHREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size);
+extern NANOTHREAD_EXPORT void pool_set_size(Pool *pool, uint32_t size,
+                                            int start_parked NANOTHREAD_DEF(1));
 
 /**
  * \brief Enable/disable time profiling
@@ -177,7 +213,7 @@ pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *payload);
  * The function returns a task handle that can be used to schedule other
  * dependent tasks, and to wait for task completion if desired. This handle
  * must eventually be released using \ref task_release() or \ref
- * task_release_and_wait(). A failure to do so will result in memory leaks.
+ * task_wait_and_release(). A failure to do so will result in memory leaks.
  *
  * <b>Small task optimization</b>: If desired, small tasks can be executed
  * right away without using the thread pool. This happens under the following
@@ -231,6 +267,12 @@ pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *payload);
  *     when only encodes a small amount of work (\c size == 1). Otherwise
  *     it will be executed synchronously, and the function will return \c nullptr.
  *
+ * \param profile
+ *     If set to a nonzero value, nanothread will keep track of the start and
+ *     end time of the task. This behavior will also be enabled if
+ *     \ref pool_set_profile() is used to enable profiling globally.
+ *
+ *
  * \return
  *     A task handle that must eventually be released via \ref task_release()
  *     or \ref task_wait_and_release(). The function returns \c nullptr when
@@ -247,7 +289,8 @@ Task *task_submit_dep(Pool *pool,
                       void *payload NANOTHREAD_DEF(0),
                       uint32_t payload_size NANOTHREAD_DEF(0),
                       void (*payload_deleter)(void *) NANOTHREAD_DEF(0),
-                      int always_async NANOTHREAD_DEF(0));
+                      int always_async NANOTHREAD_DEF(0),
+                      int profile NANOTHREAD_DEF(0));
 
 /*
  * \brief Release a task handle so that it can eventually be reused
@@ -260,9 +303,6 @@ Task *task_submit_dep(Pool *pool,
  * longer be used as a direct parent of other tasks, and it is no longer
  * possible to wait for its completion using an operation like \ref
  * task_wait().
- *
- * \param pool
- *     The thread pool containing the task. \c nullptr refers to the default pool.
  *
  * \param task
  *     The task in question. When equal to \c nullptr, the operation is a no-op.
@@ -303,12 +343,43 @@ extern NANOTHREAD_EXPORT void task_wait(Task *task) NANOTHREAD_THROW;
 extern NANOTHREAD_EXPORT void task_wait_and_release(Task *task) NANOTHREAD_THROW;
 
 /**
+ * \brief Query whether a task has completed without blocking
+ *
+ * This function checks if all work units of the specified task have been
+ * completed. Unlike \ref task_wait(), this function returns immediately
+ * without blocking.
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the function returns true.
+ *
+ * \return
+ *     true if the task has completed (or is nullptr), false otherwise.
+ */
+extern NANOTHREAD_EXPORT bool task_query(Task *task);
+
+/**
  * \brief Return the time consumed by the task in milliseconds
  *
- * To use this function, you must first enable time profiling via \ref
- * pool_set_profile() before launching tasks.
+ * To use this function, the underlying task must have been launched via \ref
+ * task_submit_dep() with the ``profile`` argument set to a nonzero value.
+ * Alternatively, you may call \ref pool_set_profile() before launching tasks
+ * to automatically enable profiling globally.
+ *
+ * The task must have finished previously, use \ref task_wait() if in doubt.
  */
 extern NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW;
+
+/**
+ * \brief Return the difference between the start time of two different tasks
+ *
+ * To use this function, the underlying task2 must have been launched via \ref
+ * task_submit_dep() with the ``profile`` argument set to a nonzero value.
+ * Alternatively, you may call \ref pool_set_profile() before launching tasks
+ * to automatically enable profiling globally.
+ *
+ * Both tasks must have finished previously, use \ref task_wait() if in doubt.
+ */
+extern NANOTHREAD_EXPORT double task_time_rel(Task *task_1, Task *task_2) NANOTHREAD_THROW;
 
 /*
  * \brief Increase the reference count of a task
@@ -335,7 +406,7 @@ Task *task_submit(Pool *pool,
                   int always_async NANOTHREAD_DEF(0)) {
 
     return task_submit_dep(pool, 0, 0, size, func, payload, payload_size,
-                           payload_deleter, always_async);
+                           payload_deleter, always_async, 0);
 }
 
 /// Convenience wrapper around task_submit(), but fully synchronous

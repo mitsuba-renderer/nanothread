@@ -9,9 +9,9 @@
 
 #pragma once
 
+#include "park.h"
 #include <atomic>
 #include <vector>
-#include <condition_variable>
 #include <type_traits>
 #include <exception>
 #include <cstring>
@@ -29,11 +29,22 @@ using Lock = std::mutex;
 
 struct Pool;
 
+enum class SleepKind : uint8_t {
+    Worker,
+    Helper
+};
+
 constexpr uint64_t high_bit  = (uint64_t) 0x0000000100000000ull;
 constexpr uint64_t high_mask = (uint64_t) 0xFFFFFFFF00000000ull;
-constexpr uint64_t low_mask  = (uint64_t) 0x00000000FFFFFFFFull;
 
-inline uint64_t shift(uint32_t value) { return ((uint64_t) value) << 32; }
+/// Monotonic wall-clock time in platform-native units (nanoseconds on
+/// Apple/Linux, ``QueryPerformanceCounter`` ticks on Windows).
+extern uint64_t get_time_raw();
+
+#if defined(_WIN32)
+/// Ticks-to-milliseconds scale, initialized at dynamic-init time in queue.cpp.
+extern const double timer_frequency_scale_ms;
+#endif
 
 struct Task {
     /**
@@ -119,19 +130,17 @@ struct Task {
     /// Successor tasks that depend on this task
     std::vector<Task *> children;
 
-    /// Atomic flag stating whether the 'exception' field is already used
-    std::atomic<bool> exception_used;
-
     /// Pointer to an exception in case the task failed
     std::exception_ptr exception;
 
-#if defined(__APPLE__)
-    uint64_t time_start, time_end;
-#elif !defined(_WIN32)
-    timespec time_start, time_end;
-#else
-    LARGE_INTEGER time_start, time_end;
-#endif
+    /// Atomic flag stating whether the 'exception' field is already used
+    std::atomic<bool> exception_used;
+
+    /// Record the start/end time of this task?
+    bool profile;
+
+    /// Start/end timestamps in \ref get_time_raw units.
+    std::atomic<uint64_t> time_start, time_end;
 
     /// Fixed-size payload storage region
     alignas(8) uint8_t payload_storage[256];
@@ -167,6 +176,11 @@ struct Task {
  * memory architecture (e.g. AArch64), but likely would not not work an
  * completely weakly ordered architecture like the DEC Alpha.
  */
+#if defined(_MSC_VER)
+#  pragma warning(push)
+// C4324: structure was padded due to alignment specifier.
+#  pragma warning(disable : 4324)
+#endif
 struct TaskQueue {
 public:
     /// Create an empty task queue
@@ -219,10 +233,10 @@ public:
     std::pair<Task *, uint32_t> pop();
 
     /**
-     * \breif Fetch a task from the queue, or sleep
+     * \brief Fetch a task from the queue, or sleep
      *
      * This function repeatedly tries to fetch work from the queue and sleeps
-     * if no work is available for an extended amount of time (~50 ms) and
+     * if no work is available for an extended amount of time (~20 ms) and
      * the \c may_sleep parameter is set to \c true.
      *
      * The function stops trying to acquire work and returns <tt>(nullptr,
@@ -230,30 +244,55 @@ public:
      * evaluates to true.
      */
     std::pair<Task *, uint32_t> pop_or_sleep(bool (*stopping_criterion)(void *),
-                                             void *payload, bool may_sleep);
+                                             void *payload, bool may_sleep,
+                                             SleepKind sleep_kind,
+                                             bool park_immediately);
 
-    /// Wake sleeping threads
-    void wakeup();
+    /// Wake every sleeping participant. Used for shutdown and other global events.
+    void wake_everyone();
+
+    /// Wake helpers waiting in task_wait()/pool_work_until().
+    void wake_helpers();
+
+    /// Register/unregister a worker thread that can participate in execution.
+    void worker_started();
+    void worker_stopped();
 
 private:
+    /// Wake sleeping workers if queued work exceeds awake workers.
+    void wake_workers();
+
+    /// Number of additional workers needed based on current queue/parking state.
+    uint32_t worker_deficit() const;
+
+    /// Cache line size used to separate independently-contended cursors.
+    static constexpr size_t cacheline = 64;
+
     /// Head and tail of a lock-free list data structure
-    Task::Ptr head, tail;
+    alignas(cacheline) Task::Ptr head;
+    alignas(cacheline) Task::Ptr tail;
 
     /// Head of a lock-free stack storing unused tasks
-    Task::Ptr recycle;
+    alignas(cacheline) Task::Ptr recycle;
 
     /// Number of task instances created (for debugging)
     std::atomic<uint32_t> tasks_created;
 
-    /// Upper 32 bit: sleep phase, lower 32 bit: number of sleepers
-    std::atomic<uint64_t> sleep_state;
+    /// Number of queued work units that have not yet been claimed.
+    std::atomic<uint32_t> ready_units;
 
-    /// Mutex protecting the fields below
-    std::mutex sleep_mutex;
+    /// Number of live worker threads associated with this queue.
+    std::atomic<uint32_t> worker_count;
 
-    /// Condition variable used to manage workers that are asleep
-    std::condition_variable sleep_cv;
+    /// Idle worker park/wakeup state (see park.h).
+    Parking worker_parking;
+
+    /// Helper-thread park/wakeup state used by task_wait().
+    Parking helper_parking;
 };
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 
 
 extern "C" uint32_t pool_thread_id();
@@ -263,7 +302,7 @@ extern int profile_tasks;
 #define NT_STR_2(x) #x
 #define NT_STR(x)   NT_STR_2(x)
 
-// #define NT_DEBUG
+// NT_DEBUG is defined by the NANOTHREAD_ENABLE_TRACE CMake option.
 #if defined(NT_DEBUG)
 #  define NT_TRACE(fmt, ...)                                                  \
       fprintf(stderr, "%03u: " fmt "\n", pool_thread_id(), ##__VA_ARGS__)
@@ -277,4 +316,3 @@ extern int profile_tasks;
                         ":" NT_STR(__LINE__) ": " #x "\n");                    \
         abort();                                                               \
     }
-

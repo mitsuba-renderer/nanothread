@@ -22,13 +22,64 @@
 #  include <emmintrin.h>
 #endif
 
-/// Put worker threads to sleep after 500K attempts to get work
-#define NANOTHREAD_MAX_ATTEMPTS 500000
+/// Put worker threads to sleep after this many milliseconds without work
+#define NANOTHREAD_MAX_IDLE_MS 20.0
+
+/// Consult the wall clock once every (mask + 1) iterations of the busy loop.
+#define NANOTHREAD_IDLE_CHECK_MASK 0xFFFu
+
+#if defined(_WIN32)
+/// Scale factor converting QueryPerformanceCounter ticks to milliseconds.
+/// The timer frequency is fixed for the lifetime of the process, so we cache
+/// it at dynamic-initialization time and keep the hot path branch-free.
+/// Declared ``extern`` in queue.h so ``task_time`` can reuse it.
+extern const double timer_frequency_scale_ms = []() {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    return 1e3 / (double) freq.QuadPart;
+}();
+#endif
+
+/// Monotonic wall-clock time in milliseconds. Does not require a context
+/// switch on the target platforms.
+static inline double time_milliseconds() {
+#if defined(_WIN32)
+    LARGE_INTEGER ticks;
+    QueryPerformanceCounter(&ticks);
+    return timer_frequency_scale_ms * (double) ticks.QuadPart;
+#elif defined(__APPLE__)
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000.0;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+#endif
+}
+
+/// Monotonic wall-clock time in platform-native units (ns on Apple/Linux,
+/// ``QueryPerformanceCounter`` ticks on Windows). ``task_time`` converts.
+uint64_t get_time_raw() {
+#if defined(_WIN32)
+    LARGE_INTEGER ticks;
+    QueryPerformanceCounter(&ticks);
+    return (uint64_t) ticks.QuadPart;
+#elif defined(__APPLE__)
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
+#endif
+}
 
 /// Reduce power usage in busy-wait CAS loops
 static void cas_pause() {
 #if defined(_M_X64) || defined(__SSE2__)
     _mm_pause();
+#elif defined(_M_ARM64) || defined(_M_ARM)
+    __yield();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield" ::: "memory");
 #endif
 }
 
@@ -69,7 +120,20 @@ static Task::Ptr ldar(Task::Ptr &source) {
 #endif
 }
 
-TaskQueue::TaskQueue() : tasks_created(0), sleep_state(0) {
+// *Non-atomic* 16 byte store mirroring \ref ldar().
+static void star(Task::Ptr &target, Task::Ptr value) {
+#if defined(_MSC_VER)
+    using P = unsigned __int64 volatile *;
+    *((P) &target)       = (uint64_t) value.task;
+    *(((P) &target) + 1) = (uint64_t) value.value;
+#else
+    __atomic_store_n((uint64_t *) &target, (uint64_t) value.task,
+                     __ATOMIC_RELAXED);
+    __atomic_store_n(((uint64_t *) &target) + 1, value.value, __ATOMIC_RELAXED);
+#endif
+}
+
+TaskQueue::TaskQueue() : tasks_created(0), ready_units(0), worker_count(0) {
     head = Task::Ptr(alloc(0));
     tail = head;
 }
@@ -149,21 +213,25 @@ Task *TaskQueue::alloc(uint32_t size) {
         tasks_created++;
     }
 
-    task->next = Task::Ptr();
+    star(task->next, Task::Ptr());
     task->refcount.store(size + (size == 0 ? high_bit : (3 * high_bit)),
                          std::memory_order_relaxed);
     task->wait_parents.store(0, std::memory_order_relaxed);
     task->wait_count.store(0, std::memory_order_relaxed);
     task->size = size;
-    memset(&task->time_start, 0, sizeof(task->time_start));
-    memset(&task->time_end, 0, sizeof(task->time_end));
+    task->time_start.store(0, std::memory_order_relaxed);
+    task->time_end.store(0, std::memory_order_relaxed);
 
-    NT_TRACE("created new task %p with size=%u", task, size);
+    NT_TRACE("%s task %p with size=%u",
+             node.task ? "reusing recycled" : "created new", task, size);
 
     return task;
 }
 
 void TaskQueue::release(Task *task, bool high) {
+    if (!high && task->profile)
+        task->time_end.store(get_time_raw(), std::memory_order_relaxed);
+
     uint64_t result = task->refcount.fetch_sub(high ? high_bit : 1);
     uint32_t ref_lo = (uint32_t) result,
              ref_hi = (uint32_t) (result >> 32);
@@ -172,22 +240,12 @@ void TaskQueue::release(Task *task, bool high) {
     ref_hi -= (uint32_t) high;
     ref_lo -= (uint32_t) !high;
 
-    NT_TRACE("dec_ref(%p, (%i, %i)) -> ref = (%u, %u)", task, (int) high,
-             (int) !high, ref_hi, ref_lo);
+    NT_TRACE("release(task=%p, %s) -> refcount=(hi=%u, lo=%u)", task,
+             high ? "high" : "low", ref_hi, ref_lo);
 
     // If all work has completed: schedule children and free payload
     if (!high && ref_lo == 0) {
         NT_TRACE("all work associated with task %p has completed.", task);
-
-        if (profile_tasks) {
-            #if defined(_WIN32)
-                QueryPerformanceCounter(&task->time_end);
-            #elif defined(__APPLE__)
-                task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-            #else
-                clock_gettime(CLOCK_MONOTONIC, &task->time_end);
-            #endif
-        }
 
         for (Task *child : task->children) {
             uint32_t wait = child->wait_parents.fetch_sub(1);
@@ -218,9 +276,9 @@ void TaskQueue::release(Task *task, bool high) {
 
         task->clear();
 
-        // Possible that waiting threads were put to sleep
+        // Wake task_wait() helpers without disturbing idle workers.
         if (task->wait_count.load() > 0)
-            wakeup();
+            wake_helpers();
 
         release(task, true);
     } else if (high && ref_hi == 0) {
@@ -231,7 +289,7 @@ void TaskQueue::release(Task *task, bool high) {
 
         Task::Ptr node = ldar(recycle);
         while (true) {
-            task->next = node;
+            star(task->next, node);
 
             if (cas(recycle, node, node.update_task(task)))
                 break;
@@ -245,8 +303,10 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
     if (!parent)
         return;
 
+    /* Acquire load pairs with 'refcount.fetch_sub' in release() that a
+       throwing worker performs *after* writing 'exception'. */
     uint64_t refcount =
-        parent->refcount.load(std::memory_order_relaxed);
+        parent->refcount.load(std::memory_order_acquire);
 
     /* Increase the parent task's reference count to prevent the cleanup
        handler in release() from starting while the following executes. */
@@ -269,7 +329,7 @@ void TaskQueue::add_dependency(Task *parent, Task *child) {
 
         if (parent->refcount.compare_exchange_weak(refcount, refcount + 1,
                                                    std::memory_order_release,
-                                                   std::memory_order_relaxed))
+                                                   std::memory_order_acquire))
             break;
 
         cas_pause();
@@ -299,6 +359,9 @@ void TaskQueue::push(Task *task) {
 
     NT_TRACE("push(task=%p, size=%u)", task, size);
 
+    // Relaxed: `ready_units` is advisory (wake/park heuristic only).
+    ready_units.fetch_add(size, std::memory_order_relaxed);
+
     while (true) {
         // Lead tail and tail->next, and double-check, in this order
         Task::Ptr tail_c = ldar(tail);
@@ -324,9 +387,8 @@ void TaskQueue::push(Task *task) {
         cas_pause();
     }
 
-    // Wake sleeping threads, if any
-    if (sleep_state.load(std::memory_order_acquire) & low_mask)
-        wakeup();
+    wake_workers();
+    helper_parking.wake_n(size);
 }
 
 std::pair<Task *, uint32_t> TaskQueue::pop() {
@@ -359,6 +421,11 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
                     if (cas(head, head_c, head_c.update_task(next_c.task))) {
                         task = next_c.task;
                         index = task->size - 1;
+                        // Account for the whole task in one shot at retirement
+                        // instead of touching the shared `ready_units` cacheline
+                        // on every unit claim.
+                        ready_units.fetch_sub(task->size,
+                                              std::memory_order_relaxed);
                         release(head_c.task, true);
                         break;
                     }
@@ -382,55 +449,72 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
 
     if (task) {
         NT_TRACE("pop(task=%p, index=%u)", task, index);
+        // NB: `ready_units` is decremented per task at retirement (see the
+        // head-removal branch above), not per unit, to keep the shared counter
+        // off the hot claim path.
 
-        if (index == 0 && profile_tasks) {
-            #if defined(_WIN32)
-                QueryPerformanceCounter(&task->time_start);
-            #elif defined(__APPLE__)
-                task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-            #else
-                clock_gettime(CLOCK_MONOTONIC, &task->time_start);
-            #endif
-        }
+        if (index == 0 && task->profile)
+            task->time_start.store(get_time_raw(), std::memory_order_relaxed);
     }
 
     return { task, index };
 }
 
-void TaskQueue::wakeup() {
-    std::unique_lock<std::mutex> guard(sleep_mutex);
-    uint64_t value = sleep_state.load();
-    NT_TRACE("wakeup(): sleep_state := (%u, 0)", (uint32_t) (sleep_state >> 32) + 1);
-    sleep_state = (value + high_bit) & high_mask;
-    sleep_cv.notify_all();
+void TaskQueue::wake_everyone() {
+    worker_parking.wake_n(UINT32_MAX);
+    helper_parking.wake_n(UINT32_MAX);
 }
 
-#if defined(NT_DEBUG)
-double time_milliseconds() {
-    #if defined(_WIN32)
-        LARGE_INTEGER ticks, ticks_per_sec;
-        QueryPerformanceCounter(&ticks);
-        QueryPerformanceFrequency(&ticks_per_sec);
-        return (double) (ticks.QuadPart * 1000) / (double) ticks_per_sec.QuadPart;
-    #elif defined(__APPLE__)
-        return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000.0;
-    #else
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return ts.tv_sec * 1000 + ts.tv_nsec / 1000000.0;
-    #endif
+void TaskQueue::wake_helpers() {
+    helper_parking.wake_n(UINT32_MAX);
 }
-#endif
+
+void TaskQueue::worker_started() {
+    worker_count.fetch_add(1, std::memory_order_release);
+}
+
+void TaskQueue::worker_stopped() {
+    worker_count.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+uint32_t TaskQueue::worker_deficit() const {
+    uint32_t workers = worker_count.load(std::memory_order_acquire);
+    if (workers == 0)
+        return 0;
+
+    uint32_t ready = ready_units.load(std::memory_order_relaxed);
+    if (ready == 0)
+        return 0;
+
+    uint32_t sleepers = worker_parking.sleepers();
+    if (sleepers > workers)
+        sleepers = workers;
+
+    uint32_t awake = workers - sleepers,
+             desired = ready < workers ? ready : workers,
+             deficit = desired > awake ? desired - awake : 0;
+
+    NT_TRACE("worker deficit=%u (ready=%u, awake=%u/%u)", deficit, ready, awake,
+             workers);
+
+    return deficit;
+}
+
+void TaskQueue::wake_workers() {
+    // wake_n() broadcasts in a single syscall when the deficit covers every
+    // parked worker, otherwise it releases exactly that many.
+    uint32_t deficit = worker_deficit();
+    if (deficit)
+        worker_parking.wake_n(deficit);
+}
 
 std::pair<Task *, uint32_t>
 TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
-                        bool may_sleep) {
-        std::pair<Task *, uint32_t> result(nullptr, 0);
-        uint32_t attempts = 0;
-
-#if defined(NT_DEBUG)
-    double start = time_milliseconds();
-#endif
+                        bool may_sleep, SleepKind sleep_kind,
+                        bool park_immediately) {
+    std::pair<Task *, uint32_t> result(nullptr, 0);
+    uint32_t attempts = 0;
+    double start_ms = time_milliseconds();
 
     while (true) {
         result = pop();
@@ -438,57 +522,61 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
         if (result.first || stopping_criterion(payload))
             break;
 
-        attempts++;
+        if (!may_sleep)
+            continue;
 
-        if (may_sleep && attempts >= NANOTHREAD_MAX_ATTEMPTS) {
-            std::unique_lock<std::mutex> guard(sleep_mutex);
+        /* Go to sleep once the worker has been unable to find work for at
+           least NANOTHREAD_MAX_IDLE_MS of wall-clock time. The clock is only
+           polled once every NANOTHREAD_IDLE_CHECK_MASK+1 attempts to keep
+           the spin loop cheap. A freshly booted "start parked" worker skips
+           this warm-up spin and parks on its first idle poll. */
+        if (!park_immediately &&
+            (((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) != 0 ||
+             time_milliseconds() - start_ms < NANOTHREAD_MAX_IDLE_MS))
+            continue;
+        park_immediately = false;
 
-            uint64_t value = ++sleep_state, phase = value & high_mask;
-            NT_TRACE("pop_or_sleep(): falling asleep after %.2f milliseconds, "
-                     "sleep_state := (%u, %u)!",
-                     time_milliseconds() - start, (uint32_t)(value >> 32),
-                     (uint32_t) value);
+        // Park/wake handshake -- see Parking in park.h.
+        Parking &parking =
+            sleep_kind == SleepKind::Worker ? worker_parking : helper_parking;
+        uint32_t token = parking.enter();
+        result = pop();
+        bool idle = !result.first && !stopping_criterion(payload);
 
-            // Try once more to fetch a job
-            result = pop();
-
-            /* If the following is true, somebody added work, or the stopping
-               became active while this thread was about to go to sleep. */
-            if (result.first || stopping_criterion(payload)) {
-                // Reduce sleep_state if we're still in the same phase.
-                NT_TRACE("sleep aborted.");
-                while (true) {
-                    if (sleep_state.compare_exchange_strong(value, value - 1))
-                        break;
-                    if ((value & high_mask) != phase)
-                        break;
-                    cas_pause();
-                }
-                break;
+        if (idle) {
+            // Final sleep gate: re-check the deficit while counted as a
+            // sleeper. If the queue visibly still needs this worker, back out
+            // and keep polling instead of parking, so a stale producer-side
+            // wake cannot strand work. We are about to resume polling and so
+            // cover one unit of the deficit ourselves; wake peers for the rest.
+            uint32_t deficit =
+                sleep_kind == SleepKind::Worker ? worker_deficit() : 0;
+            if (deficit > 0) {
+                NT_TRACE("sleep gate: staying awake, waking %u peer(s)",
+                         deficit - 1);
+                parking.leave();
+                worker_parking.wake_n(deficit - 1);
+                start_ms = time_milliseconds();
+                attempts = 0;
+                continue;
             }
 
-            /* The push() code above has the structure
-
-                - A1. Enqueue work
-                - A2. Check sleep_state, and wake threads if nonzero
-
-               While the code here has the structure
-
-                - B1. Increase sleep_state
-                - B2. Try to dequeue work
-                - B3. Wait for wakeup signal
-
-               This ordering excludes the possibility that the thread sleeps
-               erroneously while work is available or added later on.
-            */
-
-            while ((sleep_state & high_mask) == phase)
-                sleep_cv.wait(guard);
-
-            value = sleep_state.load();
-            NT_TRACE("pop_or_sleep(): woke up -- sleep_state=(%u, %u)",
-                     (uint32_t)(value >> 32), (uint32_t) value);
+            NT_TRACE("park (%s, idle=%.1f ms)",
+                     sleep_kind == SleepKind::Worker ? "worker" : "helper",
+                     time_milliseconds() - start_ms);
+            parking.park(token);
+            NT_TRACE("unpark (%s)",
+                     sleep_kind == SleepKind::Worker ? "worker" : "helper");
         }
+        parking.leave();
+
+        if (result.first || stopping_criterion(payload))
+            break;
+
+        // Returning from park() means new work just arrived; give the
+        // worker a fresh spin window before potentially re-sleeping.
+        start_ms = time_milliseconds();
+        attempts = 0;
     }
 
     return result;

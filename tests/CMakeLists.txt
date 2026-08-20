@@ -16,3 +16,8 @@ add_executable(test_04 test_04.cpp)
 target_link_libraries(test_04 PRIVATE nanothread)
 target_compile_features(test_04 PRIVATE cxx_std_11)
 add_test(NAME test_04 COMMAND test_04)
+
+add_executable(test_05 test_05.cpp)
+target_link_libraries(test_05 PRIVATE nanothread)
+target_compile_features(test_05 PRIVATE cxx_std_11)
+add_test(NAME test_05 COMMAND test_05)

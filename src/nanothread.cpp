@@ -16,9 +16,19 @@
 
 #if defined(__linux__)
 #  include <unistd.h>
+#  include <sched.h>
 #elif defined(_WIN32)
 #  include <windows.h>
 #  include <processthreadsapi.h>
+#elif defined(__APPLE__)
+#  include <pthread.h>
+#  include <pthread/qos.h>
+#  include <sys/sysctl.h>
+#  include <os/workgroup.h>
+#  include <Availability.h>
+#  if __MAC_OS_X_VERSION_MIN_REQUIRED < 110000
+#    error "nanothread requires a macOS deployment target of 11.0 or later"
+#  endif
 #endif
 
 #if defined(_MSC_VER)
@@ -44,21 +54,29 @@ struct Pool {
     /// List of currently running worker threads
     std::vector<std::unique_ptr<Worker>> workers;
 
-    /// Number of idle workers that have gone to sleep
-    std::atomic<uint32_t> asleep;
-
     /// Should denormalized floating point numbers be flushed to zero?
     bool ftz = true;
+
+#if defined(__APPLE__)
+    /// Parallel workgroup advising the scheduler to co-schedule the worker
+    /// threads on the same performance cluster (as in GCD's dispatch_apply).
+    /// Each worker joins/leaves on its own thread (see worker function); the
+    /// creating thread deliberately does *not* join.
+    os_workgroup_t workgroup = nullptr;
+#endif
 };
 
 struct Worker {
     Pool *pool;
     std::thread thread;
     uint32_t id;
-    bool stop;
+    std::atomic<bool> stop;
     bool ftz;
 
-    Worker(Pool *pool, uint32_t id, bool ftz);
+    /// Park immediately on boot instead of spinning before the first park?
+    bool start_parked;
+
+    Worker(Pool *pool, uint32_t id, bool ftz, bool start_parked);
     ~Worker();
     void run();
 };
@@ -67,6 +85,7 @@ struct Worker {
 static Pool *pool_default_inst = nullptr;
 static Lock pool_default_lock;
 static uint32_t cached_core_count = 0;
+static uint32_t cached_perf_core_count = 0;
 
 uint32_t core_count() {
     // assumes atomic word size memory access
@@ -90,7 +109,7 @@ uint32_t core_count() {
         /* The kernel may expect a larger cpu_set_t than would
            be warranted by the physical core count. Keep querying
            with increasingly larger buffers if the
-           pthread_getaffinity_np operation fails */
+           sched_getaffinity operation fails */
         for (uint32_t i = 0; i < 10; ++i) {
             size = CPU_ALLOC_SIZE(ncores_logical);
             cpuset = CPU_ALLOC(ncores_logical);
@@ -100,7 +119,7 @@ uint32_t core_count() {
             }
             CPU_ZERO_S(size, cpuset);
 
-            int retval = pthread_getaffinity_np(pthread_self(), size, cpuset);
+            retval = sched_getaffinity(0, size, cpuset);
             if (retval == 0)
                 break;
             CPU_FREE(cpuset);
@@ -123,6 +142,24 @@ uint32_t core_count() {
     return ncores;
 }
 
+uint32_t performance_core_count() {
+    if (cached_perf_core_count)
+        return cached_perf_core_count;
+
+    uint32_t n = 0;
+#if defined(__APPLE__)
+    size_t size = sizeof(n);
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &n, &size, nullptr, 0) != 0)
+        n = 0;
+#endif
+
+    if (n == 0)
+        n = core_count();
+
+    cached_perf_core_count = n;
+    return n;
+}
+
 
 uint32_t pool_thread_id() {
     return thread_id_tls;
@@ -140,8 +177,12 @@ Pool *pool_default() {
 Pool *pool_create(uint32_t size, int ftz) {
     Pool *pool = new Pool();
     pool->ftz = ftz != 0;
-    if (size == (uint32_t) -1)
-        size = core_count();
+#if defined(__APPLE__)
+    // Create the workgroup the workers co-schedule on, and bias this thread to
+    // the performance cluster.
+    pool->workgroup = os_workgroup_parallel_create("nanothread", nullptr);
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+#endif
     NT_TRACE("pool_create(%p)", pool);
     pool_set_size(pool, size);
     return pool;
@@ -151,6 +192,12 @@ Pool *pool_create(uint32_t size, int ftz) {
 void pool_destroy(Pool *pool) {
     if (pool) {
         pool_set_size(pool, 0);
+#if defined(__APPLE__)
+        if (pool->workgroup) {
+            os_release(pool->workgroup);
+            pool->workgroup = nullptr;
+        }
+#endif
         delete pool;
     } else if (pool_default_inst) {
         pool_destroy(pool_default_inst);
@@ -165,35 +212,42 @@ uint32_t pool_size(Pool *pool) {
     }
 
     if (pool)
-        return (uint32_t) pool->workers.size();
+        return (uint32_t) pool->workers.size() + 1;
     else
-        return core_count();
+        return performance_core_count();
 }
 
-void pool_set_size(Pool *pool, uint32_t size) {
+void pool_set_size(Pool *pool, uint32_t size, int start_parked) {
     if (!pool) {
         std::unique_lock<Lock> guard(pool_default_lock);
         pool = pool_default_inst;
 
-        if (!pool) {
-            pool = pool_default_inst = new Pool();
-            NT_TRACE("pool_create(%p)", pool);
-        }
+        if (!pool)
+            pool = pool_default_inst = pool_create(0);
     }
 
-    NT_TRACE("pool_set_size(%p, %u)", pool, size);
+    if (size == NANOTHREAD_AUTO)
+        size = performance_core_count();
 
-    int diff = (int) size - (int) pool->workers.size();
+    NT_TRACE("pool_set_size(%p, %u, start_parked=%i)", pool, size, start_parked);
+
+    // `size` counts the calling thread as a worker, so subtract one.
+    // `size == 0` is accepted as a shorthand for "no worker threads".
+    uint32_t workers = size > 0 ? size - 1 : 0;
+
+    int diff = (int) workers - (int) pool->workers.size();
     if (diff > 0) {
         // Launch extra worker threads
         for (int i = 0; i < diff; ++i)
             pool->workers.push_back(std::unique_ptr<Worker>(
-                new Worker(pool, (uint32_t) pool->workers.size() + 1, pool->ftz)));
+                new Worker(pool, (uint32_t) pool->workers.size() + 1, pool->ftz,
+                           start_parked != 0)));
     } else if (diff < 0) {
         // Remove worker threads (destructor calls join())
         for (int i = diff; i != 0; ++i)
-            pool->workers[pool->workers.size() + i]->stop = true;
-        pool->queue.wakeup();
+            pool->workers[pool->workers.size() + i]->stop.store(
+                true, std::memory_order_relaxed);
+        pool->queue.wake_everyone();
         for (int i = diff; i != 0; ++i)
             pool->workers.pop_back();
     }
@@ -213,7 +267,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
                       uint32_t parent_count, uint32_t size,
                       void (*func)(uint32_t, void *), void *payload,
                       uint32_t payload_size, void (*payload_deleter)(void *),
-                      int async) {
+                      int async, int profile) {
 
     if (size == 0) {
         // There is no work, so the payload is irrelevant
@@ -222,6 +276,9 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
         // The queue requires task size >= 1
         size = 1;
     }
+
+    // Enable profiling if requested globally or via the 'profile' argument
+    bool profile_task = profile_tasks || profile != 0;
 
     // Does the task have parent tasks
     bool has_parent = false;
@@ -232,47 +289,22 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
     if (size == 1 && !has_parent && async == 0) {
         NT_TRACE("task_submit_dep(): task is small, executing right away");
 
-        if (!profile_tasks) {
-            if (func)
-                func(0, payload);
-
-            if (payload_deleter)
-                payload_deleter(payload);
-
-            // Don't even return a task..
-            return nullptr;
-        } else {
+        Task *task = nullptr;
+        if (profile_task) {
             if (!pool)
                 pool = pool_default();
+            task = pool->queue.alloc(size);
+            task->time_start.store(get_time_raw(), std::memory_order_relaxed);
+        }
 
-            Task *task = pool->queue.alloc(size);
+        if (func)
+            func(0, payload);
 
-            if (profile_tasks) {
-                #if defined(_WIN32)
-                    QueryPerformanceCounter(&task->time_start);
-                #elif defined(__APPLE__)
-                    task->time_start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-                #else
-                    clock_gettime(CLOCK_MONOTONIC, &task->time_start);
-                #endif
-            }
+        if (payload_deleter)
+            payload_deleter(payload);
 
-            if (func)
-                func(0, payload);
-
-            if (profile_tasks) {
-                #if defined(_WIN32)
-                    QueryPerformanceCounter(&task->time_end);
-                #elif defined(__APPLE__)
-                    task->time_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-                #else
-                    clock_gettime(CLOCK_MONOTONIC, &task->time_end);
-                #endif
-            }
-
-            if (payload_deleter)
-                payload_deleter(payload);
-
+        if (task) {
+            task->time_end.store(get_time_raw(), std::memory_order_relaxed);
             task->refcount.store(high_bit, std::memory_order_relaxed);
             task->exception_used.store(false, std::memory_order_relaxed);
             task->exception = nullptr;
@@ -281,14 +313,10 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
             task->pool = pool;
             task->payload = nullptr;
             task->payload_deleter = nullptr;
-
-            return task;
         }
-    }
 
-    // Size 0 is equivalent to size 1, but without the above optimization
-    if (size == 0)
-        size = 1;
+        return task;
+    }
 
     if (!pool)
         pool = pool_default();
@@ -309,6 +337,7 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
     task->size = size;
     task->func = func;
     task->pool = pool;
+    task->profile = profile_task;
 
     if (payload) {
         if (payload_deleter || payload_size == 0) {
@@ -346,11 +375,14 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
 }
 
 static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
-                              void *payload, bool may_sleep) {
+                              void *payload, bool may_sleep,
+                              SleepKind sleep_kind,
+                              bool park_immediately = false) {
     Task *task;
     uint32_t index;
     std::tie(task, index) =
-        pool->queue.pop_or_sleep(stopping_criterion, payload, may_sleep);
+        pool->queue.pop_or_sleep(stopping_criterion, payload, may_sleep,
+                                 sleep_kind, park_immediately);
 
     if (task) {
         if (task->func) {
@@ -385,7 +417,8 @@ void pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *paylo
     if (!pool)
         return;
     while (!stopping_criterion(payload))
-        pool_execute_task(pool, stopping_criterion, payload, false);
+        pool_execute_task(pool, stopping_criterion, payload, false,
+                          SleepKind::Helper);
 }
 
 #if defined(__SSE2__)
@@ -425,7 +458,8 @@ void task_wait(Task *task) {
 
         // Help executing work units in the meantime
         while (!stopping_criterion(task))
-            pool_execute_task(pool, stopping_criterion, task, true);
+            pool_execute_task(pool, stopping_criterion, task, true,
+                              SleepKind::Helper);
 
         task->wait_count--;
 
@@ -454,33 +488,41 @@ void task_wait_and_release(Task *task) NANOTHREAD_THROW {
     task_release(task);
 }
 
+bool task_query(Task *task) {
+    if (!task)
+        return true;
+
+    uint32_t remaining = (uint32_t) task->refcount.load();
+    return remaining == 0;
+}
+
+/// Convert a \ref get_time_raw delta to milliseconds; return 0 for invalid inputs.
+static double raw_delta_ms(uint64_t end, uint64_t start) {
+    if (start == 0 || end == 0 || end < start)
+        return 0.0;
 #if defined(_WIN32)
-static double timer_frequency_scale = 0.0;
+    return timer_frequency_scale_ms * (double) (end - start);
+#else
+    return (double) (end - start) * 1e-6;
 #endif
+}
 
 NANOTHREAD_EXPORT double task_time(Task *task) NANOTHREAD_THROW {
     if (!task)
         return 0;
-
-#if defined(__APPLE__)
-    return (task->time_end - task->time_start) * 1e-6;
-#elif !defined(_WIN32)
-    return (task->time_end.tv_sec - task->time_start.tv_sec) * 1e3 +
-           (task->time_end.tv_nsec - task->time_start.tv_nsec) * 1e-6;
-#else
-    if (timer_frequency_scale == 0.0) {
-        LARGE_INTEGER timer_frequency;
-        QueryPerformanceFrequency(&timer_frequency);
-        timer_frequency_scale = 1e3 / timer_frequency.QuadPart;
-    }
-
-    return timer_frequency_scale *
-           (task->time_end.QuadPart - task->time_start.QuadPart);
-#endif
+    return raw_delta_ms(task->time_end.load(std::memory_order_relaxed),
+                        task->time_start.load(std::memory_order_relaxed));
 }
 
-Worker::Worker(Pool *pool, uint32_t id, bool ftz)
-    : pool(pool), id(id), stop(false), ftz(ftz) {
+NANOTHREAD_EXPORT double task_time_rel(Task *task_1, Task *task_2) NANOTHREAD_THROW {
+    if (!task_1 || !task_2)
+        return 0;
+    return raw_delta_ms(task_2->time_start.load(std::memory_order_relaxed),
+                        task_1->time_start.load(std::memory_order_relaxed));
+}
+
+Worker::Worker(Pool *pool, uint32_t id, bool ftz, bool start_parked)
+    : pool(pool), id(id), stop(false), ftz(ftz), start_parked(start_parked) {
     thread = std::thread(&Worker::run, this);
 }
 
@@ -492,12 +534,12 @@ void Worker::run() {
     NT_TRACE("worker started");
 
     #if defined(_WIN32)
-        wchar_t buf[24];
-        _snwprintf(buf, sizeof(buf) / sizeof(wchar_t), L"nanothread worker %u", id);
+        wchar_t buf[16];
+        _snwprintf(buf, sizeof(buf) / sizeof(wchar_t), L"nt [%u]", id);
         SetThreadDescription(GetCurrentThread(), buf);
     #else
-        char buf[24];
-        snprintf(buf, sizeof(buf), "nanothread worker %u", id);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "nt [%u]", id);
         #if defined(__APPLE__)
             pthread_setname_np(buf);
         #else
@@ -505,11 +547,38 @@ void Worker::run() {
         #endif
     #endif
 
+#if defined(__APPLE__)
+    // Raise the QoS class so the scheduler keeps workers on the
+    // performance cluster.
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+
+    // Join the parallel workgroup for the lifetime of this worker.
+    os_workgroup_join_token_s wg_token;
+    bool wg_joined = false;
+    if (pool->workgroup &&
+        os_workgroup_join(pool->workgroup, &wg_token) == 0)
+        wg_joined = true;
+#endif
+
     FTZGuard ftz_guard(ftz);
-    while (!stop)
+    pool->queue.worker_started();
+    bool park_immediately = start_parked;
+    while (!stop.load(std::memory_order_relaxed)) {
         pool_execute_task(
-            pool, [](void *ptr) -> bool { return *((bool *) ptr); }, &stop,
-            true);
+            pool,
+            [](void *ptr) -> bool {
+                return ((std::atomic<bool> *) ptr)
+                    ->load(std::memory_order_relaxed);
+            },
+            &stop, true, SleepKind::Worker, park_immediately);
+        park_immediately = false;
+    }
+    pool->queue.worker_stopped();
+
+#if defined(__APPLE__)
+    if (wg_joined)
+        os_workgroup_leave(pool->workgroup, &wg_token);
+#endif
 
     NT_TRACE("worker stopped");
 
