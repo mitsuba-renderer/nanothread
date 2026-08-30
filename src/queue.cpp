@@ -148,8 +148,9 @@ TaskQueue::~TaskQueue() {
     while (ptr.task) {
         Task *task = ptr.task;
 
-        if (ptr.remain() != 0) {
-            incomplete_size += ptr.remain();
+        uint32_t remain = task->remain.load(std::memory_order_relaxed);
+        if (remain != 0) {
+            incomplete_size += remain;
             incomplete++;
         }
 
@@ -216,6 +217,7 @@ Task *TaskQueue::alloc(uint32_t size) {
     star(task->next, Task::Ptr());
     task->refcount.store(size + (size == 0 ? high_bit : (3 * high_bit)),
                          std::memory_order_relaxed);
+    task->remain.store(0, std::memory_order_relaxed);
     task->wait_parents.store(0, std::memory_order_relaxed);
     task->wait_count.store(0, std::memory_order_relaxed);
     task->size = size;
@@ -362,6 +364,13 @@ void TaskQueue::push(Task *task) {
     // Relaxed: `ready_units` is advisory (wake/park heuristic only).
     ready_units.fetch_add(size, std::memory_order_relaxed);
 
+    /* Arm the claim counter, which makes the task's work units available to
+       consumers. The release store pairs with the acquire operations in
+       try_claim() so that a thread observing a nonzero counter also sees the
+       fully initialized task. The counter must only become nonzero here,
+       once all parent tasks have completed. */
+    task->remain.store(size, std::memory_order_release);
+
     while (true) {
         // Lead tail and tail->next, and double-check, in this order
         Task::Ptr tail_c = ldar(tail);
@@ -373,7 +382,7 @@ void TaskQueue::push(Task *task) {
         if (tail_c == tail_c_2) {
             if (!next_c.task) {
                 // Tail was pointing to last node, try to insert here
-                if (cas(next, next_c, Task::Ptr(task, size))) {
+                if (cas(next, next_c, next_c.update_task(task, size))) {
                     // Best-effort attempt to redirect tail to the added element
                     cas(tail, tail_c, tail_c.update_task(task));
                     break;
@@ -391,9 +400,36 @@ void TaskQueue::push(Task *task) {
     helper_parking.wake_n(size);
 }
 
+bool TaskQueue::try_claim(Task *task, uint32_t &index) {
+    /* The acquire operations pair with the release store in push() that arms
+       the counter. Observing a nonzero value therefore implies that the task
+       is fully initialized. A successful claim obligates the caller to
+       execute the unit and then call release(task) exactly once. */
+    uint32_t remain = task->remain.load(std::memory_order_acquire);
+
+    while (remain != 0) {
+        if (task->remain.compare_exchange_weak(remain, remain - 1,
+                                               std::memory_order_acquire,
+                                               std::memory_order_acquire)) {
+            index = task->size - remain;
+
+            if (index == 0 && task->profile)
+                task->time_start.store(get_time_raw(),
+                                       std::memory_order_relaxed);
+
+            NT_TRACE("try_claim(task=%p, index=%u)", task, index);
+            return true;
+        }
+
+        cas_pause();
+    }
+
+    return false;
+}
+
 std::pair<Task *, uint32_t> TaskQueue::pop() {
-    uint32_t index;
-    Task *task;
+    uint32_t index = 0;
+    Task *task = nullptr;
 
     while (true) {
         // Lead head, tail, and next element, and double-check, in this order
@@ -406,35 +442,27 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
         // Detect inconsistencies due to contention
         if (head_c == head_c_2) {
             if (head_c.task != tail_c.task) {
-                uint32_t remain = next_c.remain();
+                if (try_claim(next_c.task, index)) {
+                    task = next_c.task;
+                    break;
+                }
 
-                if (remain > 1) {
-                    // More than 1 remaining work units, update work counter
-                    if (cas(next, next_c, next_c.update_remain(remain - 1))) {
-                        task = next_c.task;
-                        index = task->size - remain;
-                        break;
-                    }
-                } else {
-                    NT_ASSERT(remain == 1);
-                    // Head node is removed from the queue, reduce refcount
-                    if (cas(head, head_c, head_c.update_task(next_c.task))) {
-                        task = next_c.task;
-                        index = task->size - 1;
-                        // Account for the whole task in one shot at retirement
-                        // instead of touching the shared `ready_units` cacheline
-                        // on every unit claim.
-                        ready_units.fetch_sub(task->size,
-                                              std::memory_order_relaxed);
-                        release(head_c.task, true);
-                        break;
-                    }
+                /* All work units of the head's successor have been claimed,
+                   potentially out of band via claim_or_sleep(). Retire the
+                   node by advancing the head past it. The task size is taken
+                   from the link snapshot rather than the task itself, which
+                   may already have been recycled at this point. */
+                if (cas(head, head_c, head_c.update_task(next_c.task))) {
+                    // Account for the whole task in one shot at retirement
+                    // instead of touching the shared `ready_units` cacheline
+                    // on every unit claim.
+                    ready_units.fetch_sub(next_c.size(),
+                                          std::memory_order_relaxed);
+                    release(head_c.task, true);
                 }
             } else {
                 // Task queue was empty
                 if (!next_c.task) {
-                    task = nullptr;
-                    index = 0;
                     cas_pause();
                     break;
                 } else {
@@ -447,15 +475,8 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
         cas_pause();
     }
 
-    if (task) {
+    if (task)
         NT_TRACE("pop(task=%p, index=%u)", task, index);
-        // NB: `ready_units` is decremented per task at retirement (see the
-        // head-removal branch above), not per unit, to keep the shared counter
-        // off the hot claim path.
-
-        if (index == 0 && task->profile)
-            task->time_start.store(get_time_raw(), std::memory_order_relaxed);
-    }
 
     return { task, index };
 }
@@ -463,10 +484,12 @@ std::pair<Task *, uint32_t> TaskQueue::pop() {
 void TaskQueue::wake_everyone() {
     worker_parking.wake_n(UINT32_MAX);
     helper_parking.wake_n(UINT32_MAX);
+    exclusive_parking.wake_n(UINT32_MAX);
 }
 
 void TaskQueue::wake_helpers() {
     helper_parking.wake_n(UINT32_MAX);
+    exclusive_parking.wake_n(UINT32_MAX);
 }
 
 void TaskQueue::worker_started() {
@@ -580,4 +603,48 @@ TaskQueue::pop_or_sleep(bool (*stopping_criterion)(void *), void *payload,
     }
 
     return result;
+}
+
+bool TaskQueue::claim_or_sleep(Task *task, uint32_t &index) {
+    uint32_t attempts = 0;
+    double start_ms = time_milliseconds();
+
+    while (true) {
+        if (try_claim(task, index))
+            return true;
+
+        // All units are claimed. Stop once the last one has been executed.
+        if ((uint32_t) task->refcount.load() == 0)
+            return false;
+
+        // Same idle heuristic as in pop_or_sleep()
+        if ((((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) != 0 ||
+             time_milliseconds() - start_ms < NANOTHREAD_MAX_IDLE_MS))
+            continue;
+
+        /* Park/wake handshake, see Parking in park.h. The wake signal is the
+           completion broadcast in release(), which wake_helpers() forwards
+           to exclusive_parking whenever the task has registered waiters. */
+        uint32_t token = exclusive_parking.enter();
+
+        bool claimed = try_claim(task, index),
+             idle = !claimed && (uint32_t) task->refcount.load() != 0;
+
+        if (idle) {
+            NT_TRACE("park (exclusive, idle=%.1f ms)",
+                     time_milliseconds() - start_ms);
+            exclusive_parking.park(token);
+            NT_TRACE("unpark (exclusive)");
+        }
+
+        exclusive_parking.leave();
+
+        if (claimed)
+            return true;
+        else if (!idle)
+            return false;
+
+        start_ms = time_milliseconds();
+        attempts = 0;
+    }
 }

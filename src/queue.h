@@ -51,11 +51,15 @@ struct Task {
      * \brief Wide 16 byte pointer to a task in the worker pool. In addition to the
      * pointer itself, it encapsulates two more pieces of information:
      *
-     * 1. The lower 32 bit of the \c value field store how many remaining work
-     *    units the task contains
-     *
-     * 2. The upper 32 bit of the \c value field contain a counter to prevent
+     * 1. The upper 32 bit of the \c value field contain a counter to prevent
      *    the ABA problem during atomic updates.
+     *
+     * 2. In queue link fields written by \ref TaskQueue::push(), the lower 32
+     *    bit of the \c value field store the size of the pointed-to task.
+     *    This lets \ref TaskQueue::pop() retire a drained node without
+     *    dereferencing it, which would be unsafe since the node may already
+     *    have been recycled for a new task. The head and tail fields leave
+     *    these bits zero.
      */
     struct alignas(16) Ptr {
         Task *task;
@@ -63,17 +67,13 @@ struct Task {
 
         Ptr(Task *task = nullptr, uint64_t value = 0) : task(task), value(value) { }
 
-        Task::Ptr update_remain(uint32_t remain = 0) const {
-            return Ptr{ task, remain | ((value & high_mask) + high_bit) };
-        }
-
-        Task::Ptr update_task(Task *new_task) const {
-            return Ptr{ new_task, (value & high_mask) + high_bit };
+        Task::Ptr update_task(Task *new_task, uint32_t low = 0) const {
+            return Ptr{ new_task, low | ((value & high_mask) + high_bit) };
         }
 
         operator bool() const { return task != nullptr; }
 
-        uint32_t remain() const { return (uint32_t) value; }
+        uint32_t size() const { return (uint32_t) value; }
 
         bool operator==(const Task::Ptr &other) const {
             return task == other.task && value == other.value;
@@ -105,6 +105,18 @@ struct Task {
      * task, and it can be recycled.
      */
     std::atomic<uint64_t> refcount;
+
+    /**
+     * \brief Number of work units that have not yet been claimed by a thread
+     *
+     * This counter decides which thread executes which work unit. It is
+     * armed in \ref TaskQueue::push() when the task becomes runnable and
+     * must remain zero before that point. Otherwise, work units could be
+     * claimed before the parent tasks have completed. Units are claimed by
+     * \ref TaskQueue::pop() for the task at the head of the queue, and
+     * directly through a task handle in \c task_wait_exclusive().
+     */
+    std::atomic<uint32_t> remain;
 
     /// Number of parent tasks that this task is waiting for
     std::atomic<uint32_t> wait_parents;
@@ -164,10 +176,15 @@ struct Task {
  * by Maged Michael and Michael Scott.
  *
  * The main difference compared to a Michael-Scott queue is that each queue
- * item also has a *size* \c N that effectively creates \c N adjacent copies of
- * the item (but using a counter, which is more efficient than naive
- * replication). The \ref pop() operation returns the a pointer to the item and
- * a number in the range <tt>[0, N-1]</tt> indicating the item's index.
+ * item (a task) represents \c N work units. The queue itself only tracks the
+ * order of tasks. The number of unclaimed work units is stored in a per-task
+ * counter (\ref Task::remain) that \ref push() arms when the task becomes
+ * runnable. The \ref pop() operation claims one unit of the task at the head
+ * of the queue and returns the item along with an index in the range
+ * <tt>[0, N-1]</tt>. Nodes whose counter has reached zero are retired in
+ * passing. A thread that holds a task handle can also claim units directly
+ * without involving the queue (see \ref claim_or_sleep()). This is the basis
+ * of \c task_wait_exclusive().
  *
  * Tasks can also have children. Following termination of a task, the queue
  * will push any children that don't depend on other unfinished work.
@@ -202,7 +219,8 @@ public:
      * units. The number '2' indicates two special references by user code and
      * by the queue itself, which don't correspond to outstanding work.
      *
-     * Initializes the Tasks' \c wait \c size, \c refcount, and \c next fields.
+     * Initializes the Tasks' \c wait, \c size, \c refcount, \c remain, and
+     * \c next fields.
      */
     Task *alloc(uint32_t size);
 
@@ -248,6 +266,19 @@ public:
                                              SleepKind sleep_kind,
                                              bool park_immediately);
 
+    /**
+     * \brief Claim a work unit of the given task, or sleep
+     *
+     * Counterpart of \ref pop_or_sleep() used by \c task_wait_exclusive().
+     * It claims work units of \c task directly through its claim counter
+     * without involving the queue. It therefore never hands out work that
+     * belongs to other tasks. On success, the function returns \c true and
+     * stores a number in the range <tt>[0, size - 1]</tt> in \c index. When
+     * no unit is claimable, the function spins and eventually parks until
+     * the task has completed. It then returns \c false.
+     */
+    bool claim_or_sleep(Task *task, uint32_t &index);
+
     /// Wake every sleeping participant. Used for shutdown and other global events.
     void wake_everyone();
 
@@ -259,6 +290,9 @@ public:
     void worker_stopped();
 
 private:
+    /// Claim one work unit of \c task. Fails when all units are claimed.
+    bool try_claim(Task *task, uint32_t &index);
+
     /// Wake sleeping workers if queued work exceeds awake workers.
     void wake_workers();
 
@@ -289,6 +323,9 @@ private:
 
     /// Helper-thread park/wakeup state used by task_wait().
     Parking helper_parking;
+
+    /// Park/wakeup state for threads inside task_wait_exclusive().
+    Parking exclusive_parking;
 };
 #if defined(_MSC_VER)
 #  pragma warning(pop)

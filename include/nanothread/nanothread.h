@@ -342,6 +342,43 @@ extern NANOTHREAD_EXPORT void task_wait(Task *task) NANOTHREAD_THROW;
  */
 extern NANOTHREAD_EXPORT void task_wait_and_release(Task *task) NANOTHREAD_THROW;
 
+/*
+ * \brief Variant of \ref task_wait() that only executes work of the given task
+ *
+ * Like \ref task_wait(), this function blocks until all work units of 'task'
+ * have completed, and the calling thread participates in their execution. In
+ * contrast to \ref task_wait(), the calling thread only runs work units
+ * belonging to 'task'. This is useful when the caller holds resources (e.g.
+ * locks) that callbacks of unrelated queued tasks might also try to acquire.
+ *
+ * The function is intended for tasks that are +immediately ready to execute
+ * (i.e., which do not need to wait for completion of +a parent task).
+ * Otherwise, the calling thread waits passively and other threads must complete
+ * the parents. In a pool without worker threads, the wait would then never
+ * finish.
+ *
+ * If an exception was caught during parallel execution of 'task', the
+ * function re-raises it in the context of the caller, as in \ref task_wait().
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the operation is a no-op.
+ */
+extern NANOTHREAD_EXPORT void task_wait_exclusive(Task *task) NANOTHREAD_THROW;
+
+/*
+ * \brief Wait for the completion of the specified task as in \ref
+ * task_wait_exclusive() and release its handle
+ *
+ * This function is equivalent to calling \ref task_wait_exclusive() followed
+ * by \ref task_release(). If an exception was caught during parallel
+ * execution of 'task', the function performs the release step and then
+ * re-raises the exception in the context of the caller.
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the operation is a no-op.
+ */
+extern NANOTHREAD_EXPORT void task_wait_and_release_exclusive(Task *task) NANOTHREAD_THROW;
+
 /**
  * \brief Query whether a task has completed without blocking
  *
@@ -481,7 +518,8 @@ namespace drjit {
             (*p->f)(blocked_range<Int>(begin, end));
         };
 
-        task_submit_and_wait(pool, range.blocks(), callback, &payload);
+        Task *task = task_submit(pool, range.blocks(), callback, &payload);
+        task_wait_and_release_exclusive(task);
     }
 
     template <typename Int, typename Func>
