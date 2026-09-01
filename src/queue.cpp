@@ -648,3 +648,58 @@ bool TaskQueue::claim_or_sleep(Task *task, uint32_t &index) {
         attempts = 0;
     }
 }
+
+Task *TaskQueue::claim_any_or_sleep(Task **tasks, size_t &size,
+                                    uint32_t &index) {
+    uint32_t attempts = 0;
+    double start_ms = time_milliseconds();
+
+    while (true) {
+        // Scan for claimable work, pruning completed tasks along the way
+        Task *claimed = nullptr;
+        size_t n = 0;
+        for (size_t i = 0; i < size; ++i) {
+            Task *task = tasks[i];
+            if (!claimed && try_claim(task, index))
+                claimed = task;
+            if (claimed == task || (uint32_t) task->refcount.load() != 0)
+                tasks[n++] = task;
+        }
+        size = n;
+
+        if (claimed)
+            return claimed;
+        else if (size == 0)
+            return nullptr;
+
+        // Same idle heuristic as in pop_or_sleep()
+        if ((((++attempts) & NANOTHREAD_IDLE_CHECK_MASK) != 0 ||
+             time_milliseconds() - start_ms < NANOTHREAD_MAX_IDLE_MS))
+            continue;
+
+        // Park/wake handshake, see claim_or_sleep()
+        uint32_t token = exclusive_parking.enter();
+
+        bool idle = true;
+        for (size_t i = 0; i < size; ++i) {
+            Task *task = tasks[i];
+            if (task->remain.load(std::memory_order_acquire) != 0 ||
+                (uint32_t) task->refcount.load() == 0) {
+                idle = false;
+                break;
+            }
+        }
+
+        if (idle) {
+            NT_TRACE("park (exclusive_n, idle=%.1f ms)",
+                     time_milliseconds() - start_ms);
+            exclusive_parking.park(token);
+            NT_TRACE("unpark (exclusive_n)");
+        }
+
+        exclusive_parking.leave();
+
+        start_ms = time_milliseconds();
+        attempts = 0;
+    }
+}

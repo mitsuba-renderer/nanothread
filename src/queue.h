@@ -279,6 +279,19 @@ public:
      */
     bool claim_or_sleep(Task *task, uint32_t &index);
 
+    /**
+     * \brief Claim a work unit of any of the given tasks, or sleep
+     *
+     * Generalization of \ref claim_or_sleep() used by \c
+     * task_wait_exclusive_n(). The function scans the array for a claimable
+     * work unit and returns the owning task on success, storing the unit in
+     * \c index. Completed tasks are pruned from the array during the scan,
+     * which shrinks \c size. When no unit is claimable but unfinished tasks
+     * remain, the function spins and eventually parks. It returns \c nullptr
+     * once every task has completed.
+     */
+    Task *claim_any_or_sleep(Task **tasks, size_t &size, uint32_t &index);
+
     /// Wake every sleeping participant. Used for shutdown and other global events.
     void wake_everyone();
 

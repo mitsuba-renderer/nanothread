@@ -508,6 +508,58 @@ void task_wait_and_release_exclusive(Task *task) NANOTHREAD_THROW {
     task_release(task);
 }
 
+void task_wait_exclusive_n(size_t size, Task *const *tasks) NANOTHREAD_THROW {
+    Pool *pool = nullptr;
+    for (size_t i = 0; i < size; ++i) {
+        if (tasks[i]) {
+            pool = tasks[i]->pool;
+            break;
+        }
+    }
+    if (!pool)
+        return;
+
+    FTZGuard ftz_guard(pool->ftz);
+
+    // Signal that we are waiting for these tasks, so that their completion
+    // broadcasts in release() wake this thread from the exclusive parking lot
+    for (size_t i = 0; i < size; ++i)
+        if (tasks[i])
+            tasks[i]->wait_count++;
+
+    NT_TRACE("task_wait_exclusive_n(%zu tasks)", size);
+
+    // Working copy without null entries; claim_any_or_sleep() prunes
+    // completed tasks from it
+    std::vector<Task *> remain;
+    remain.reserve(size);
+    for (size_t i = 0; i < size; ++i) {
+        if (tasks[i])
+            remain.push_back(tasks[i]);
+    }
+
+    size_t remain_size = remain.size();
+    uint32_t index;
+    while (Task *task = pool->queue.claim_any_or_sleep(remain.data(),
+                                                       remain_size, index)) {
+        execute_unit(task, index);
+        pool->queue.release(task);
+    }
+
+    std::exception_ptr eptr;
+    for (size_t i = 0; i < size; ++i) {
+        Task *task = tasks[i];
+        if (task) {
+            task->wait_count--;
+            if (task->exception && !eptr)
+                eptr = task->exception;
+        }
+    }
+
+    if (eptr)
+        std::rethrow_exception(eptr);
+}
+
 void task_retain(Task *task) {
     if (task)
         task->pool->queue.retain(task);

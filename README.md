@@ -264,4 +264,7 @@ variants ``task_wait_exclusive()`` and ``task_wait_and_release_exclusive()``
 wait for task completion and spend this time exclusively executing work units
 belonging to the task being waited on. They are restricted to tasks that are
 immediately ready to execute (i.e., which do not need to wait for completion of
-a parent task).
+a parent task). The function ``task_wait_exclusive_n()`` generalizes this to an
+array of tasks, and ``task_submit_and_wait_exclusive()`` provides a synchronous
+submit-and-wait wrapper. The C++ interface ``dr::parallel_for()`` builds on the
+latter.
