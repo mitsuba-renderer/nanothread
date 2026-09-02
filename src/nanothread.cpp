@@ -427,7 +427,7 @@ void pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *paylo
                           SleepKind::Helper);
 }
 
-#if defined(__SSE2__)
+#if defined(__SSE2__) || defined(_M_X64)
 struct FTZGuard {
     FTZGuard(bool enable) : enable(enable) {
         if (enable) {
