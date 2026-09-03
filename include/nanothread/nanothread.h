@@ -342,6 +342,65 @@ extern NANOTHREAD_EXPORT void task_wait(Task *task) NANOTHREAD_THROW;
  */
 extern NANOTHREAD_EXPORT void task_wait_and_release(Task *task) NANOTHREAD_THROW;
 
+/*
+ * \brief Variant of \ref task_wait() that only executes work of the given task
+ *
+ * Like \ref task_wait(), this function blocks until all work units of 'task'
+ * have completed, and the calling thread participates in their execution. In
+ * contrast to \ref task_wait(), the calling thread only runs work units
+ * belonging to 'task'. This is useful when the caller holds resources (e.g.
+ * locks) that callbacks of unrelated queued tasks might also try to acquire.
+ *
+ * The function is intended for tasks that are +immediately ready to execute
+ * (i.e., which do not need to wait for completion of +a parent task).
+ * Otherwise, the calling thread waits passively and other threads must complete
+ * the parents. In a pool without worker threads, the wait would then never
+ * finish.
+ *
+ * If an exception was caught during parallel execution of 'task', the
+ * function re-raises it in the context of the caller, as in \ref task_wait().
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the operation is a no-op.
+ */
+extern NANOTHREAD_EXPORT void task_wait_exclusive(Task *task) NANOTHREAD_THROW;
+
+/*
+ * \brief Wait for the completion of the specified task as in \ref
+ * task_wait_exclusive() and release its handle
+ *
+ * This function is equivalent to calling \ref task_wait_exclusive() followed
+ * by \ref task_release(). If an exception was caught during parallel
+ * execution of 'task', the function performs the release step and then
+ * re-raises the exception in the context of the caller.
+ *
+ * \param task
+ *     The task in question. When equal to \c nullptr, the operation is a no-op.
+ */
+extern NANOTHREAD_EXPORT void task_wait_and_release_exclusive(Task *task) NANOTHREAD_THROW;
+
+/*
+ * \brief Variant of \ref task_wait_exclusive() that waits for an array of tasks
+ *
+ * The function blocks until all tasks in the array 'tasks' have completed.
+ * Entries may be \c nullptr or repeated, and all others must belong to the
+ * same pool. The calling thread participates in the execution of the listed
+ * tasks, claiming work from whichever of them currently has runnable units.
+ * It never executes work of unrelated queued tasks, which could block or
+ * recurse in ways that the caller cannot anticipate.
+ *
+ * Work units of a listed task only become claimable once its parent tasks
+ * have completed. Parents that are not part of the array must be completed
+ * by other threads, during which the calling thread waits passively, as in
+ * \ref task_wait_exclusive().
+ *
+ * If exceptions were caught during the parallel execution of the listed
+ * tasks, the first one in array order is re-raised in the context of the
+ * caller.
+ */
+extern NANOTHREAD_EXPORT void task_wait_exclusive_n(size_t size,
+                                                    Task *const *tasks) NANOTHREAD_THROW;
+
 /**
  * \brief Query whether a task has completed without blocking
  *
@@ -420,6 +479,22 @@ void task_submit_and_wait(Pool *pool,
     task_wait_and_release(task);
 }
 
+/**
+ * \brief Variant of \ref task_submit_and_wait() that waits exclusively
+ *
+ * The calling thread only runs work units of the submitted task and never
+ * touches unrelated queued work, as explained in \ref task_wait_exclusive().
+ */
+static inline
+void task_submit_and_wait_exclusive(Pool *pool,
+                                    uint32_t size NANOTHREAD_DEF(1),
+                                    void (*func)(uint32_t, void *) NANOTHREAD_DEF(0),
+                                    void *payload NANOTHREAD_DEF(0)) {
+
+    Task *task = task_submit(pool, size, func, payload, 0, 0, 0);
+    task_wait_and_release_exclusive(task);
+}
+
 #if defined(__cplusplus)
 }
 
@@ -481,7 +556,7 @@ namespace drjit {
             (*p->f)(blocked_range<Int>(begin, end));
         };
 
-        task_submit_and_wait(pool, range.blocks(), callback, &payload);
+        task_submit_and_wait_exclusive(pool, range.blocks(), callback, &payload);
     }
 
     template <typename Int, typename Func>

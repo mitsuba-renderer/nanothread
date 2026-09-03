@@ -374,6 +374,33 @@ Task *task_submit_dep(Pool *pool, const Task *const *parent,
     return task;
 }
 
+/// Run one claimed work unit of 'task' and capture exceptions
+static void execute_unit(Task *task, uint32_t index) {
+    if (!task->func)
+        return;
+
+    if (task->exception_used.load()) {
+        NT_TRACE(
+            "not running callback (task=%p, index=%u) because another "
+            "work unit of this task generated an exception",
+            task, index);
+        return;
+    }
+
+    try {
+        NT_TRACE("running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
+        task->func(index, task->payload);
+    } catch (...) {
+        bool value = false;
+        if (task->exception_used.compare_exchange_strong(value, true)) {
+            NT_TRACE("exception caught, storing..");
+            task->exception = std::current_exception();
+        } else {
+            NT_TRACE("exception caught, ignoring (an exception was already stored)");
+        }
+    }
+}
+
 static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
                               void *payload, bool may_sleep,
                               SleepKind sleep_kind,
@@ -385,28 +412,7 @@ static void pool_execute_task(Pool *pool, bool (*stopping_criterion)(void *),
                                  sleep_kind, park_immediately);
 
     if (task) {
-        if (task->func) {
-            if (task->exception_used.load()) {
-                NT_TRACE(
-                    "not running callback (task=%p, index=%u) because another "
-                    "work unit of this task generated an exception",
-                    task, index);
-            } else {
-                try {
-                    NT_TRACE("running callback (task=%p, index=%u, payload=%p)", task, index, task->payload);
-                    task->func(index, task->payload);
-                } catch (...) {
-                    bool value = false;
-                    if (task->exception_used.compare_exchange_strong(value, true)) {
-                        NT_TRACE("exception caught, storing..");
-                        task->exception = std::current_exception();
-                    } else {
-                        NT_TRACE("exception caught, ignoring (an exception was already stored)");
-                    }
-                }
-            }
-        }
-
+        execute_unit(task, index);
         pool->queue.release(task);
     }
 }
@@ -421,7 +427,7 @@ void pool_work_until(Pool *pool, bool (*stopping_criterion)(void *), void *paylo
                           SleepKind::Helper);
 }
 
-#if defined(__SSE2__)
+#if defined(__SSE2__) || defined(_M_X64)
 struct FTZGuard {
     FTZGuard(bool enable) : enable(enable) {
         if (enable) {
@@ -466,6 +472,92 @@ void task_wait(Task *task) {
         if (task->exception)
             std::rethrow_exception(task->exception);
     }
+}
+
+void task_wait_exclusive(Task *task) {
+    if (task) {
+        Pool *pool = task->pool;
+        FTZGuard ftz_guard(pool->ftz);
+
+        // Signal that we are waiting for this task
+        task->wait_count++;
+
+        NT_TRACE("task_wait_exclusive(%p)", task);
+
+        // Claim and execute work units of 'task', but of no other task
+        uint32_t index;
+        while (pool->queue.claim_or_sleep(task, index)) {
+            execute_unit(task, index);
+            pool->queue.release(task);
+        }
+
+        task->wait_count--;
+
+        if (task->exception)
+            std::rethrow_exception(task->exception);
+    }
+}
+
+void task_wait_and_release_exclusive(Task *task) NANOTHREAD_THROW {
+    try {
+        task_wait_exclusive(task);
+    } catch (...) {
+        task_release(task);
+        throw;
+    }
+    task_release(task);
+}
+
+void task_wait_exclusive_n(size_t size, Task *const *tasks) NANOTHREAD_THROW {
+    Pool *pool = nullptr;
+    for (size_t i = 0; i < size; ++i) {
+        if (tasks[i]) {
+            pool = tasks[i]->pool;
+            break;
+        }
+    }
+    if (!pool)
+        return;
+
+    FTZGuard ftz_guard(pool->ftz);
+
+    // Signal that we are waiting for these tasks, so that their completion
+    // broadcasts in release() wake this thread from the exclusive parking lot
+    for (size_t i = 0; i < size; ++i)
+        if (tasks[i])
+            tasks[i]->wait_count++;
+
+    NT_TRACE("task_wait_exclusive_n(%zu tasks)", size);
+
+    // Working copy without null entries; claim_any_or_sleep() prunes
+    // completed tasks from it
+    std::vector<Task *> remain;
+    remain.reserve(size);
+    for (size_t i = 0; i < size; ++i) {
+        if (tasks[i])
+            remain.push_back(tasks[i]);
+    }
+
+    size_t remain_size = remain.size();
+    uint32_t index;
+    while (Task *task = pool->queue.claim_any_or_sleep(remain.data(),
+                                                       remain_size, index)) {
+        execute_unit(task, index);
+        pool->queue.release(task);
+    }
+
+    std::exception_ptr eptr;
+    for (size_t i = 0; i < size; ++i) {
+        Task *task = tasks[i];
+        if (task) {
+            task->wait_count--;
+            if (task->exception && !eptr)
+                eptr = task->exception;
+        }
+    }
+
+    if (eptr)
+        std::rethrow_exception(eptr);
 }
 
 void task_retain(Task *task) {

@@ -258,3 +258,13 @@ counts as one of the pool's threads, so ``pool_create(0)``,
 all disable worker threads entirely. In this case the program still runs
 correctly: the calling thread performs all parallel work inside
 ``task_wait()``.
+
+Executing arbitrary queued work during a wait is sometimes undesirable. The
+variants ``task_wait_exclusive()`` and ``task_wait_and_release_exclusive()``
+wait for task completion and spend this time exclusively executing work units
+belonging to the task being waited on. They are restricted to tasks that are
+immediately ready to execute (i.e., which do not need to wait for completion of
+a parent task). The function ``task_wait_exclusive_n()`` generalizes this to an
+array of tasks, and ``task_submit_and_wait_exclusive()`` provides a synchronous
+submit-and-wait wrapper. The C++ interface ``dr::parallel_for()`` builds on the
+latter.
